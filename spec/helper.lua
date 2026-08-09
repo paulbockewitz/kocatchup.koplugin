@@ -4,14 +4,25 @@ local H = {
     shown = {},          -- widgets passed to UIManager:show, in order
     trapper_infos = {},  -- Trapper:info messages
     settings_stores = {},-- LuaSettings backing stores, keyed by path
+    scheduled = {},      -- { delay_s, fn } pairs from UIManager:scheduleIn
     run_when_online_calls = 0,
+    network_online = true,
 }
 
 function H.reset()
     H.shown = {}
     H.trapper_infos = {}
     H.settings_stores = {}
+    H.scheduled = {}
     H.run_when_online_calls = 0
+    H.network_online = true
+end
+
+-- Run all scheduled callbacks (as if their timers fired), clearing the queue.
+function H.fire_scheduled()
+    local tasks = H.scheduled
+    H.scheduled = {}
+    for _, t in ipairs(tasks) do t[2]() end
 end
 
 -- Minimal KOReader-style widget class: :extend for subclassing, :new for
@@ -74,6 +85,14 @@ package.preload["ui/uimanager"] = function()
         show = function(_, w) table.insert(H.shown, w) end,
         close = function() end,
         nextTick = function(_, fn) fn() end,
+        scheduleIn = function(_, delay_s, fn)
+            table.insert(H.scheduled, { delay_s, fn })
+        end,
+        unschedule = function(_, fn)
+            for i = #H.scheduled, 1, -1 do
+                if H.scheduled[i][2] == fn then table.remove(H.scheduled, i) end
+            end
+        end,
     }
 end
 
@@ -83,7 +102,7 @@ package.preload["ui/network/manager"] = function()
             H.run_when_online_calls = H.run_when_online_calls + 1
             cb()
         end,
-        isOnline = function() return true end,
+        isOnline = function() return H.network_online end,
     }
 end
 

@@ -13,6 +13,7 @@ Settings.defaults = {
     api_key = "",
     recap_length = "standard",  -- short | standard | detailed
     max_input_chars = 100000,   -- tail window sent to the model
+    auto_generate = false,      -- pre-generate silently on book open (opt-in)
 }
 
 function Settings.path()
@@ -156,6 +157,15 @@ function Settings.getMenuItems()
                 edit_field(_("Max input size (characters)"), "max_input_chars",
                     _("Lower this for local models with small context windows"))
             end,
+        },
+        {
+            text = _("Pre-generate on book open"),
+            checked_func = function() return Settings.load().auto_generate == true end,
+            callback = function()
+                update("auto_generate", not Settings.load().auto_generate)
+            end,
+            keep_menu_open = true,
+            help_text = _("When enabled and Wi-Fi is already connected, a recap is silently generated and cached shortly after you open a book, so viewing it later is instant. Note: this sends book text to your configured provider without a per-recap tap."),
         },
     }
 end

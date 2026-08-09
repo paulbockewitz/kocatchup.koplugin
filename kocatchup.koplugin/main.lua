@@ -22,6 +22,7 @@ local Settings = require("kocatchup_settings")
 local KoCatchup = WidgetContainer:extend{
     name = "kocatchup",
     is_doc_only = true,
+    PREGEN_DELAY_S = 20, -- background pre-generation waits this long after book open
 }
 
 -- Maps typed failures to user-facing messages. Every failure path shows a
@@ -140,6 +141,66 @@ function KoCatchup:onKoCatchupGenerate()
 
     self:generate(cfg, pos)
     return true
+end
+
+-- Background pre-generation (opt-in via the auto_generate setting): schedule
+-- a silent recap attempt shortly after a book opens so a later manual tap is
+-- an instant cache hit. Never prompts, never shows UI, never wakes Wi-Fi.
+function KoCatchup:onReaderReady()
+    local cfg = Settings.load()
+    if not cfg.auto_generate then return end
+    self._pregen_task = function() self:pregenerate() end
+    UIManager:scheduleIn(self.PREGEN_DELAY_S, self._pregen_task)
+end
+
+function KoCatchup:onCloseDocument()
+    if self._pregen_task then
+        UIManager:unschedule(self._pregen_task)
+        self._pregen_task = nil
+    end
+end
+
+function KoCatchup:pregenerate()
+    self._pregen_task = nil
+    if not self.ui or not self.ui.document then return end
+    -- Re-check everything at fire time; settings may have changed since open.
+    local cfg = Settings.load()
+    if not cfg.auto_generate then return end
+    if Llm.check_config(cfg) then return end
+    if not NetworkMgr:isOnline() then return end -- background work never prompts for Wi-Fi
+    local pos = self:getPositionInfo()
+    if pos.percent and pos.percent <= 0.02 then return end
+    local state = Cache.compare(Cache.read(self.ui.doc_settings), pos, cfg)
+    -- Only when a fresh recap is genuinely useful; "ahead" is skipped so a
+    -- backward jump never silently overwrites the later-position recap.
+    if state ~= "miss" and state ~= "behind" and state ~= "settings_changed" then return end
+
+    Trapper:wrap(function()
+        local extracted = Extractor.extract(self.ui, {
+            max_input_chars = cfg.max_input_chars,
+        })
+        if not extracted then return end
+        local prompt = Prompts.build(extracted.metadata, extracted.text, cfg.recap_length)
+        -- false = invisible trap widget: no on-screen message; a stray tap
+        -- cancels the subprocess harmlessly.
+        local completed, result = Trapper:dismissableRunInSubprocess(function()
+            return Llm.complete(cfg, prompt)
+        end, false)
+        if completed and type(result) == "table" and result.ok then
+            Cache.write(self.ui.doc_settings, {
+                recap = result.recap,
+                position = pos.key,
+                percent = pos.percent,
+                model = cfg.model,
+                recap_length = cfg.recap_length,
+                timestamp = os.time(),
+            })
+            logger.dbg("kocatchup: background recap cached")
+        else
+            logger.dbg("kocatchup: background recap skipped/failed:",
+                type(result) == "table" and result.err or tostring(result))
+        end
+    end)
 end
 
 function KoCatchup:generate(cfg, pos)

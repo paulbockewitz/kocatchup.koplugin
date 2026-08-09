@@ -11,6 +11,7 @@ KO Catchup generates a spoiler-safe AI catch-up recap of the book you're reading
 - Providers: any **OpenAI-compatible** chat-completions endpoint (OpenAI, OpenRouter, Groq, self-hosted **Ollama**) or the **Anthropic** messages API.
 - Recap length presets (short / standard / detailed).
 - Per-book caching: re-opening a recap at the same position is instant and works offline; if you've read further, you choose between the saved recap and a fresh one.
+- Optional background pre-generation: opt in and a recap is silently prepared shortly after you open a book (only when Wi-Fi is already on), so viewing it is instant.
 - Cancellable generation: the network call runs in a subprocess — tap to cancel; the UI never freezes.
 
 ## Installation
@@ -38,6 +39,7 @@ Open a book, then: Tools → KO Catchup → Settings.
 | Model | e.g. `gpt-4o-mini`, `claude-haiku-4-5`, `llama3.1` |
 | Recap length | Short (~150 words), Standard (~400), Detailed (~800) |
 | Max input size | How much recent book text is sent to the model (default 100,000 characters) |
+| Pre-generate on book open | Off by default. When on, a recap is silently generated ~20s after opening a book — only if Wi-Fi is already connected (it never prompts or wakes the radio) and the cached recap is missing or stale |
 
 ### Provider examples
 
@@ -50,7 +52,7 @@ Open a book, then: Tools → KO Catchup → Settings.
 
 ## Privacy and security
 
-- **Book text leaves your device.** Generating a recap sends up to *Max input size* characters of the current book (plus title/author) to the endpoint you configured, at your expense. Nothing is ever sent without an explicit tap. For full privacy, use Ollama on your own machine.
+- **Book text leaves your device.** Generating a recap sends up to *Max input size* characters of the current book (plus title/author) to the endpoint you configured, at your expense. Nothing is ever sent without an explicit tap — unless you opt into *Pre-generate on book open*, which sends book text automatically after opening a book (that's its purpose; leave it off if you don't want automatic sending). For full privacy, use Ollama on your own machine.
 - **Your API key is stored unencrypted** in KOReader's settings directory (`settings/kocatchup.lua`). Anyone with filesystem access to the device can read it — use device-level lock/encryption where available, and prefer revocable, spend-limited keys.
 - **TLS:** HTTPS connections verify the server certificate against KOReader's bundled CA store when present. If you enter a plain `http://` base URL for a remote host, the plugin warns you before saving it (local Ollama over `http://localhost` is fine).
 

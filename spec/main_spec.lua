@@ -212,3 +212,109 @@ describe("main (kocatchup plugin)", function()
         assert.is_nil(ui.doc_settings.data.kocatchup)
     end)
 end)
+
+describe("main (background pre-generation)", function()
+    before_each(function()
+        H.reset()
+        Llm.transport = nil
+    end)
+
+    local function enable_pregen()
+        configure_ollama()
+        local cfg = Settings.load()
+        cfg.auto_generate = true
+        Settings.save(cfg)
+    end
+
+    it("schedules nothing when the setting is off (default)", function()
+        configure_ollama()
+        local plugin = make_plugin(make_ui(string.rep("story text ", 200), 50))
+        plugin:onReaderReady()
+        assert.are.equal(0, #H.scheduled)
+    end)
+
+    it("silently generates and caches on a stale cache, with no UI", function()
+        enable_pregen()
+        local ui = make_ui(string.rep("story text ", 200), 50)
+        local plugin = make_plugin(ui)
+        Llm.transport = function() return OPENAI_OK, 200 end
+
+        plugin:onReaderReady()
+        assert.are.equal(1, #H.scheduled)
+        H.fire_scheduled()
+
+        assert.are.equal("A fine recap", ui.doc_settings.data.kocatchup.recap)
+        assert.are.equal(0, #H.shown, "background generation must show no widgets")
+    end)
+
+    it("skips silently when offline and never prompts for Wi-Fi", function()
+        enable_pregen()
+        H.network_online = false
+        local ui = make_ui(string.rep("story text ", 200), 50)
+        local plugin = make_plugin(ui)
+        Llm.transport = function() error("no network call expected offline") end
+
+        plugin:onReaderReady()
+        H.fire_scheduled()
+
+        assert.is_nil(ui.doc_settings.data.kocatchup)
+        assert.are.equal(0, H.run_when_online_calls)
+        assert.are.equal(0, #H.shown)
+    end)
+
+    it("does nothing on a same-position cache hit", function()
+        enable_pregen()
+        local ui = make_ui(string.rep("story text ", 200), 50)
+        ui.doc_settings:saveSetting("kocatchup", {
+            recap = "existing", position = "xp:xp_cur", percent = 0.5,
+            model = "test-model", recap_length = "standard", timestamp = 1,
+        })
+        local plugin = make_plugin(ui)
+        Llm.transport = function() error("no call expected on cache hit") end
+
+        plugin:onReaderReady()
+        H.fire_scheduled()
+
+        assert.are.equal("existing", ui.doc_settings.data.kocatchup.recap)
+    end)
+
+    it("never overwrites a later-position recap after a backward jump", function()
+        enable_pregen()
+        local ui = make_ui(string.rep("story text ", 200), 50)
+        ui.doc_settings:saveSetting("kocatchup", {
+            recap = "future recap", position = "xp:later", percent = 0.8,
+            model = "test-model", recap_length = "standard", timestamp = 1,
+        })
+        local plugin = make_plugin(ui)
+        Llm.transport = function() error("no call expected for ahead cache") end
+
+        plugin:onReaderReady()
+        H.fire_scheduled()
+
+        assert.are.equal("future recap", ui.doc_settings.data.kocatchup.recap)
+        assert.are.equal(0, #H.shown)
+    end)
+
+    it("stays silent on provider errors and leaves the cache unchanged", function()
+        enable_pregen()
+        local ui = make_ui(string.rep("story text ", 200), 50)
+        local plugin = make_plugin(ui)
+        Llm.transport = function() return '{"error":"boom"}', 500 end
+
+        plugin:onReaderReady()
+        H.fire_scheduled()
+
+        assert.is_nil(ui.doc_settings.data.kocatchup)
+        assert.are.equal(0, #H.shown, "errors must not surface UI in background mode")
+    end)
+
+    it("unschedules the task when the document closes first", function()
+        enable_pregen()
+        local plugin = make_plugin(make_ui(string.rep("story text ", 200), 50))
+
+        plugin:onReaderReady()
+        assert.are.equal(1, #H.scheduled)
+        plugin:onCloseDocument()
+        assert.are.equal(0, #H.scheduled)
+    end)
+end)
