@@ -1,0 +1,4 @@
+.env
+_test_settings/
+plugins/
+*.zip
