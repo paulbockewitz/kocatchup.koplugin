@@ -120,7 +120,7 @@ end
 local KoCatchup = WidgetContainer:extend{
     name = "kocatchup",
     is_doc_only = true,
-    VERSION = "0.5.4", -- keep in sync with _meta.lua and the release tag
+    VERSION = "0.5.5", -- keep in sync with _meta.lua and the release tag
     PREGEN_DELAY_S = 20, -- background pre-generation waits this long after book open
     OFFER_DELAY_S = 2, -- catch-up offer check runs this long after open/resume
     ROLL_LIMIT = 10, -- drift guard: max rolls before a re-grounded refresh
@@ -186,6 +186,18 @@ function KoCatchup:getSettingsMenuItems()
         keep_menu_open = true,
         callback = function() self:onCheckForUpdates() end,
     })
+    table.insert(items, {
+        text = _("Revert to previous version"),
+        enabled_func = function()
+            local ok, v = pcall(function()
+                self:ensureUpdaterSeams()
+                return Updater.backup_version(self:updaterPaths())
+            end)
+            return ok and v ~= nil
+        end,
+        keep_menu_open = true,
+        callback = function() self:onRevertUpdate() end,
+    })
     return items
 end
 
@@ -202,6 +214,7 @@ function KoCatchup.updater_message(err, code)
         validate_failed = _("The downloaded update was incomplete and was discarded. Your installed version is unchanged."),
         bad_response = _("The update service returned an unexpected response. Try again later."),
         install_crashed = _("The updater hit an unexpected error while installing. Your installed version is unchanged."),
+        no_backup = _("No previous version is available to revert to. A backup is kept after each in-app update."),
     }
     if err == "http_error" then
         return _("Couldn't reach the update service.") .. " (HTTP " .. tostring(code) .. ")"
@@ -218,6 +231,7 @@ function KoCatchup:ensureUpdaterSeams()
 end
 
 function KoCatchup:updaterPaths(rel)
+    rel = rel or {} -- rollback needs only the filesystem paths, no release
     local live = self.path or "."
     local parent = live:match("^(.*)[/\\][^/\\]+$") or "."
     local staging = parent .. "/kocatchup.staging"
@@ -304,6 +318,39 @@ function KoCatchup:installUpdate(rel)
             UIManager:show(InfoMessage:new{ text = text })
         end
     end)
+end
+
+-- Restores the backup kept by the last in-app update. Pure filesystem work
+-- (no network), so it runs inline — fast even on e-ink.
+function KoCatchup:onRevertUpdate()
+    self:ensureUpdaterSeams()
+    local paths = self:updaterPaths()
+    local prev = Updater.backup_version(paths)
+    if not prev then
+        UIManager:show(InfoMessage:new{ text = self.updater_message("no_backup") })
+        return true
+    end
+    UIManager:show(ConfirmBox:new{
+        text = _("Revert to version ") .. prev .. _("? The current version ")
+            .. self.VERSION .. _(" will be replaced."),
+        ok_text = _("Revert"),
+        cancel_text = _("Cancel"),
+        ok_callback = function()
+            local ok, err = Updater.rollback(paths)
+            if ok then
+                local msg = _("KO Catchup reverted to ") .. prev
+                    .. _(". Restart KOReader to use it.")
+                local restarted = pcall(function() UIManager:askForRestart(msg) end)
+                if not restarted then
+                    UIManager:show(InfoMessage:new{ text = msg })
+                end
+            else
+                logger.warn("kocatchup: rollback failed:", err)
+                UIManager:show(InfoMessage:new{ text = self.updater_message(err) })
+            end
+        end,
+    })
+    return true
 end
 
 -- Current position as an opaque identity key plus a comparable percent.

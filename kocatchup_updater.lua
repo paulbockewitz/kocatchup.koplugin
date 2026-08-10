@@ -141,12 +141,13 @@ end
 function Updater.run(p)
     local fs = Updater.fs
 
-    -- Step 0: reclaim state from a prior interrupted run.
+    -- Step 0: reclaim state from a prior interrupted run. The kept backup
+    -- (rollback copy) survives failed attempts — it is purged only just
+    -- before the swap replaces it with the current install.
     if not fs.exists(p.live) and fs.exists(p.backup) then
         fs.rename(p.backup, p.live)
     end
     fs.purge(p.staging)
-    fs.purge(p.backup)
 
     local body, err, detail = download(p.url)
     if not body then return nil, err, detail end
@@ -168,10 +169,41 @@ function Updater.run(p)
         return nil, verr
     end
 
-    -- Critical window: two atomic same-filesystem renames.
+    -- Critical window: two atomic same-filesystem renames. The old backup
+    -- is purged only now (so rename can't hit a non-empty target), and the
+    -- new one is kept for "Revert to previous version".
+    fs.purge(p.backup)
     fs.rename(p.live, p.backup)
     fs.rename(p.staged_plugin, p.live)
-    fs.purge(p.backup)
+    fs.purge(p.staging)
+    return true
+end
+
+-- rollback -------------------------------------------------------------------
+
+-- Version string of the kept pre-update copy, or nil when there is none.
+function Updater.backup_version(p)
+    local fs = Updater.fs
+    if not fs.exists(p.backup) then return nil end
+    return Updater.meta_version(fs.read(p.backup .. "/_meta.lua") or "") or "?"
+end
+
+-- Restores the kept pre-update copy: validate it (manifest present and
+-- parseable; no tag to match), then mirror run()'s two-rename critical
+-- window in reverse. Consumes the backup — one level of undo. If a crash
+-- lands between the renames, run()'s step-0 recovery restores the backup.
+function Updater.rollback(p)
+    local fs = Updater.fs
+    if not fs.exists(p.backup) then return nil, "no_backup" end
+    for _, mod in ipairs(Updater.MANIFEST) do
+        local path = p.backup .. "/" .. mod
+        if not fs.exists(path) or not fs.loadcheck(path) then
+            return nil, "validate_failed"
+        end
+    end
+    fs.purge(p.staging)
+    fs.rename(p.live, p.staging)
+    fs.rename(p.backup, p.live)
     fs.purge(p.staging)
     return true
 end

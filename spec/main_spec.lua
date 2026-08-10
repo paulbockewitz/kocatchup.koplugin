@@ -791,11 +791,50 @@ describe("main (check for updates flow)", function()
         return plugin
     end
 
-    it("adds 'Check for updates' as the last Settings item", function()
+    it("adds 'Check for updates' then 'Revert to previous version' as the last Settings items", function()
         local menu_items = {}
         updater_plugin():addToMainMenu(menu_items)
         local settings = menu_items.kocatchup.sub_item_table[2].sub_item_table
-        assert.are.equal("Check for updates", settings[#settings].text)
+        assert.are.equal("Check for updates", settings[#settings - 1].text)
+        assert.are.equal("Revert to previous version", settings[#settings].text)
+    end)
+
+    it("revert confirms, restores the backup, and prompts restart", function()
+        local renames = {}
+        Updater.fs = {
+            exists = function() return true end, -- backup and manifest present
+            purge = function() end,
+            rename = function(from, to) table.insert(renames, { from, to }) end,
+            write = function() end,
+            read = function() return 'version = "0.5.3"' end,
+            loadcheck = function() return true end,
+        }
+        Updater.transport = function() return "{}", 200 end -- seams considered bound
+        local plugin = updater_plugin()
+
+        plugin:onRevertUpdate()
+        local box = H.last_shown("ConfirmBox")
+        assert.is_not_nil(box)
+        assert.are.equal("Revert", box.ok_text)
+        assert.truthy(box.text:find("0.5.3", 1, true))
+
+        box.ok_callback()
+        assert.truthy(#renames >= 2, "rollback renames should run on confirm")
+        assert.truthy(#H.restart_prompts > 0, "should prompt for restart")
+    end)
+
+    it("revert with no backup shows the typed no_backup message", function()
+        Updater.fs = {
+            exists = function() return false end,
+            purge = function() end, rename = function() end,
+            write = function() end, read = function() return nil end,
+            loadcheck = function() return true end,
+        }
+        Updater.transport = function() return "{}", 200 end
+        updater_plugin():onRevertUpdate()
+        local info = H.last_shown("InfoMessage")
+        assert.truthy(info.text:find("No previous version", 1, true))
+        assert.is_nil(H.last_shown("ConfirmBox"))
     end)
 
     it("reports up to date without offering a download", function()

@@ -243,6 +243,34 @@ describe("kocatchup_updater.run pipeline", function()
         assert.are.equal("/plugins/kocatchup.koplugin", fs.calls.rename[1][2])
     end)
 
+    it("keeps the backup after a successful swap (rollback copy)", function()
+        local staged = "/plugins/kocatchup.staging/kocatchup.koplugin"
+        local existing = all_manifest_present(staged)
+        existing["/plugins/kocatchup.koplugin"] = true
+        local fs = make_fs({ existing = existing,
+            reads = { [staged .. "/_meta.lua"] = 'version = "0.5.0"' } })
+        wire(fs, true)
+
+        assert.is_true(Updater.run(base_paths(staged)))
+        assert.is_true(fs.exists("/plugins/kocatchup.bak"),
+            "backup must survive the swap for Revert to previous version")
+    end)
+
+    it("a failed attempt does not consume an existing rollback backup", function()
+        local fs = make_fs({ existing = {
+            ["/plugins/kocatchup.koplugin"] = true,
+            ["/plugins/kocatchup.bak"] = true,
+        } })
+        wire(fs, true)
+        Updater.transport = function() return nil, "timeout" end
+
+        local ok, err = Updater.run(base_paths("/s/kocatchup.koplugin"))
+        assert.is_nil(ok)
+        assert.are.equal("download_failed", err)
+        assert.is_true(fs.exists("/plugins/kocatchup.bak"),
+            "backup purge must wait until just before the swap")
+    end)
+
     it("fs-fidelity: real rename-onto-nonempty errors, proving step 0 prevents the wedge", function()
         -- A rename seam with realistic semantics: renaming onto an existing
         -- path errors. Without the step-0 purge, the swap would wedge.
@@ -266,5 +294,97 @@ describe("kocatchup_updater.run pipeline", function()
         local ok = Updater.run(base_paths(staged))
         assert.is_true(ok, "step 0 must purge the stale backup so the swap succeeds")
         assert.are.equal(0, #rename_errors)
+    end)
+end)
+
+describe("kocatchup_updater rollback", function()
+    local LIVE = "/plugins/kocatchup.koplugin"
+    local BAK = "/plugins/kocatchup.bak"
+    local STAGING = "/plugins/kocatchup.staging"
+
+    local function rollback_paths()
+        return { live = LIVE, staging = STAGING, backup = BAK,
+            staged_plugin = STAGING .. "/kocatchup.koplugin",
+            download = STAGING .. "/dl.zip" }
+    end
+
+    local function backup_manifest_present()
+        local t = {}
+        for _, m in ipairs(Updater.MANIFEST) do t[BAK .. "/" .. m] = true end
+        return t
+    end
+
+    before_each(function()
+        Updater.transport, Updater.hasher, Updater.archiver, Updater.fs = nil, nil, nil, nil
+    end)
+
+    it("backup_version reads the kept copy's _meta version", function()
+        Updater.fs = make_fs({ existing = { [BAK] = true },
+            reads = { [BAK .. "/_meta.lua"] = 'version = "0.5.4"' } })
+        assert.are.equal("0.5.4", Updater.backup_version(rollback_paths()))
+    end)
+
+    it("backup_version is nil with no backup", function()
+        Updater.fs = make_fs({})
+        assert.is_nil(Updater.backup_version(rollback_paths()))
+    end)
+
+    it("happy path: parks live in staging, restores backup, purges", function()
+        local existing = backup_manifest_present()
+        existing[LIVE] = true
+        existing[BAK] = true
+        local fs = make_fs({ existing = existing })
+        Updater.fs = fs
+
+        assert.is_true(Updater.rollback(rollback_paths()))
+        assert.are.equal(LIVE, fs.calls.rename[1][1])
+        assert.are.equal(STAGING, fs.calls.rename[1][2])
+        assert.are.equal(BAK, fs.calls.rename[2][1])
+        assert.are.equal(LIVE, fs.calls.rename[2][2])
+        assert.is_true(fs.exists(LIVE))
+        assert.is_false(fs.exists(BAK), "rollback consumes the backup")
+    end)
+
+    it("returns no_backup when nothing was kept", function()
+        local fs = make_fs({ existing = { [LIVE] = true } })
+        Updater.fs = fs
+        local ok, err = Updater.rollback(rollback_paths())
+        assert.is_nil(ok)
+        assert.are.equal("no_backup", err)
+        assert.are.equal(0, #fs.calls.rename)
+    end)
+
+    it("refuses a backup with a missing or unparseable module", function()
+        local existing = backup_manifest_present()
+        existing[LIVE] = true
+        existing[BAK] = true
+        existing[BAK .. "/kocatchup_llm.lua"] = nil -- one module missing
+        local fs = make_fs({ existing = existing })
+        Updater.fs = fs
+        local ok, err = Updater.rollback(rollback_paths())
+        assert.is_nil(ok)
+        assert.are.equal("validate_failed", err)
+        assert.are.equal(0, #fs.calls.rename)
+    end)
+
+    it("a crash between the renames is recovered by run()'s step 0", function()
+        -- Simulate: rename1 done (live parked in staging), rename2 never ran.
+        local existing = backup_manifest_present()
+        existing[BAK] = true -- live absent
+        local staged = STAGING .. "/kocatchup.koplugin"
+        for _, m in ipairs(Updater.MANIFEST) do existing[staged .. "/" .. m] = true end
+        local fs = make_fs({ existing = existing,
+            reads = { [staged .. "/_meta.lua"] = 'version = "0.5.0"' } })
+        Updater.transport = function() return "zipbytes", 200 end
+        Updater.hasher = function() return "goodhash" end
+        Updater.archiver = { extract = function() return true end }
+        Updater.fs = fs
+
+        local ok = Updater.run({ live = LIVE, staging = STAGING, backup = BAK,
+            staged_plugin = staged, download = STAGING .. "/dl.zip",
+            url = "https://example/z.zip", digest = "goodhash", tag = "v0.5.0" })
+        assert.is_true(ok)
+        assert.are.equal(BAK, fs.calls.rename[1][1])
+        assert.are.equal(LIVE, fs.calls.rename[1][2])
     end)
 end)

@@ -31,6 +31,8 @@ KO Catchup generates a spoiler-safe AI catch-up recap of the book you're reading
 
 Once installed, open a book and use **Tools → KO Catchup → Settings → Check for updates** to update over Wi-Fi — the plugin fetches the latest release, verifies it, and installs it in place (your settings and cached recaps are preserved). Updates download only over a verified TLS connection and are integrity-checked against the release's published checksum. If an update is ever interrupted, your installed version keeps working, and you can always re-copy the folder over USB as above.
 
+If a new version misbehaves, **Settings → Revert to previous version** restores the copy you updated from — each in-app update keeps one backup (replaced by the next update, and it survives failed update attempts). Available once you've done an in-app update on 0.5.5 or later.
+
 Tested against KOReader **2026.07** (KOReader has no stable plugin API; other versions may need adjustments — please open an issue).
 
 ## Configuration
