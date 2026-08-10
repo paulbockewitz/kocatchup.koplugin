@@ -22,33 +22,53 @@ local Updater = require("kocatchup_updater")
 
 -- Real updater seams, bound lazily at the first real check so they never
 -- pull device-only modules under unit tests (each closure requires on call).
-local function real_updater_transport(req)
+
+-- One verified HTTPS request with no auto-follow, so redirects are handled
+-- manually below (a fresh verified connection per hop). Relying on luasocket
+-- to carry the TLS `create` factory across a cross-host redirect proved
+-- unreliable on device; following manually keeps every hop verified.
+local function https_get_once(url, cafile)
     local http = require("socket.http")
     local ltn12 = require("ltn12")
     local socketutil = require("socketutil")
     local chunks = {}
     local reqt = {
-        url = req.url,
-        method = req.method or "GET",
-        headers = req.headers,
+        url = url,
+        method = "GET",
+        headers = { ["User-Agent"] = "kocatchup-updater" },
         sink = ltn12.sink.table(chunks),
-    }
-    if req.url:lower():sub(1, 6) == "https:" then
-        -- Pass the TLS-parameterized factory on the caller's table so
-        -- verification survives GitHub's cross-host redirect (KTD2): luasocket
-        -- carries only `create` to the redirected hop.
-        reqt.create = require("ssl.https").tcp{
+        redirect = false,
+        create = require("ssl.https").tcp{
             verify = "peer",
-            cafile = Llm.find_ca_bundle(),
+            cafile = cafile,
             protocol = "any",
             options = { "all", "no_sslv2", "no_sslv3" },
-        }
-    end
+        },
+    }
     socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT)
-    local ok, code = http.request(reqt)
+    local ok, code, headers = http.request(reqt)
     socketutil:reset_timeout()
-    if not ok then return nil, tostring(code) end
-    return table.concat(chunks), code
+    return ok, code, headers, table.concat(chunks)
+end
+
+-- Transport seam: verified GET that follows redirects manually (max 5),
+-- refusing any non-HTTPS hop. Returns (body, 200) or (nil, err_string).
+local function real_updater_transport(req)
+    local cafile = Llm.find_ca_bundle()
+    local url = req.url
+    for _ = 1, 6 do
+        if url:lower():sub(1, 6) ~= "https:" then return nil, "insecure_redirect" end
+        local ok, code, headers, body = https_get_once(url, cafile)
+        if not ok then return nil, "transport:" .. tostring(code) end
+        if code == 301 or code == 302 or code == 303 or code == 307 or code == 308 then
+            local loc = headers and (headers.location or headers.Location)
+            if not loc or loc == "" then return nil, "redirect_no_location" end
+            url = loc
+        else
+            return body, code
+        end
+    end
+    return nil, "too_many_redirects"
 end
 
 local function real_updater_extract(zip_path, dest)
@@ -100,7 +120,7 @@ end
 local KoCatchup = WidgetContainer:extend{
     name = "kocatchup",
     is_doc_only = true,
-    VERSION = "0.5.0", -- keep in sync with _meta.lua and the release tag
+    VERSION = "0.5.1", -- keep in sync with _meta.lua and the release tag
     PREGEN_DELAY_S = 20, -- background pre-generation waits this long after book open
     OFFER_DELAY_S = 2, -- catch-up offer check runs this long after open/resume
     ROLL_LIMIT = 10, -- drift guard: max rolls before a re-grounded refresh
@@ -221,7 +241,7 @@ function KoCatchup:onCheckForUpdates()
         return true
     end
     Trapper:wrap(function()
-        Trapper:info(_("KO Catchup: checking for updates…"))
+        Trapper:info(_("KO Catchup: checking for updates..."))
         local rel, err, code = Updater.check(self.VERSION)
         if Trapper.clear then Trapper:clear() end
         if not rel then
@@ -250,10 +270,21 @@ end
 function KoCatchup:installUpdate(rel)
     local paths = self:updaterPaths(rel)
     Trapper:wrap(function()
-        Trapper:info(_("KO Catchup: downloading and installing update…"))
-        local ok, err = Updater.run(paths)
-        if Trapper.clear then Trapper:clear() end
-        if ok then
+        -- Run the blocking network+install in a cancellable subprocess so the
+        -- e-ink UI never freezes during download; the child returns a plain
+        -- table over the pipe.
+        local completed, result = Trapper:dismissableRunInSubprocess(function()
+            local ok, err, detail = Updater.run(paths)
+            return { ok = ok, err = err, detail = detail }
+        end, _("KO Catchup: downloading and installing update...\nTap to cancel."))
+
+        if not completed then
+            -- Cancelled (SIGKILL): the next run's step-0 purge reclaims staging.
+            UIManager:show(InfoMessage:new{ text = _("Update cancelled.") })
+            return
+        end
+        result = type(result) == "table" and result or {}
+        if result.ok then
             local msg = _("KO Catchup updated to ") .. rel.version
                 .. _(". Restart KOReader to use the new version.")
             local restarted = pcall(function() UIManager:askForRestart(msg) end)
@@ -261,7 +292,12 @@ function KoCatchup:installUpdate(rel)
                 UIManager:show(InfoMessage:new{ text = msg })
             end
         else
-            UIManager:show(InfoMessage:new{ text = self.updater_message(err) })
+            logger.warn("kocatchup: update failed:", result.err, result.detail)
+            local text = self.updater_message(result.err)
+            if result.detail and result.detail ~= "nil" then
+                text = text .. "\n(" .. tostring(result.detail) .. ")"
+            end
+            UIManager:show(InfoMessage:new{ text = text })
         end
     end)
 end

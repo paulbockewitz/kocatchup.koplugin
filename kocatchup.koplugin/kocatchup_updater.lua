@@ -108,11 +108,13 @@ function Updater.check(local_version)
     return rel
 end
 
+-- Returns body, or nil, err, detail (detail is the raw transport reason, for
+-- logging/diagnostics — surfaced so a device failure isn't an opaque code).
 local function download(url)
     local body, code = Updater.transport({ url = url, method = "GET", headers = {} })
-    if not body then return nil, "download_failed" end
-    if code ~= 200 then return nil, "http_error" end
-    if #body > Updater.MAX_BYTES then return nil, "download_failed" end
+    if not body then return nil, "download_failed", tostring(code) end
+    if code ~= 200 then return nil, "http_error", "code=" .. tostring(code) end
+    if #body > Updater.MAX_BYTES then return nil, "download_failed", "oversize" end
     return body
 end
 
@@ -146,8 +148,8 @@ function Updater.run(p)
     fs.purge(p.staging)
     fs.purge(p.backup)
 
-    local body, err = download(p.url)
-    if not body then return nil, err end
+    local body, err, detail = download(p.url)
+    if not body then return nil, err, detail end
 
     if p.digest and Updater.hasher(body) ~= p.digest then
         return nil, "digest_mismatch"
