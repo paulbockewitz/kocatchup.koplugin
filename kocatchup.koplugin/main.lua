@@ -74,8 +74,8 @@ end
 local function real_updater_extract(zip_path, dest)
     local ok_arc, Archiver = pcall(require, "ffi/archiver")
     if not ok_arc then return nil, "extract_failed" end
-    local util = require("ffi/util")
-    util.makePath(dest)
+    -- makePath is frontend util; ffi/util has no directory creation.
+    require("util").makePath(dest)
     local arc = Archiver.Reader:new()
     if not arc:open(zip_path) then return nil, "extract_failed" end
     local total = 0
@@ -104,7 +104,7 @@ local function real_updater_fs()
         rename = function(a, b) return os.rename(a, b) end,
         write = function(p, bytes)
             local dir = p:match("^(.*)[/\\][^/\\]+$")
-            if dir then ffiutil().makePath(dir) end
+            if dir then require("util").makePath(dir) end
             local f = io.open(p, "wb")
             if f then f:write(bytes); f:close() end
         end,
@@ -120,7 +120,7 @@ end
 local KoCatchup = WidgetContainer:extend{
     name = "kocatchup",
     is_doc_only = true,
-    VERSION = "0.5.2", -- keep in sync with _meta.lua and the release tag
+    VERSION = "0.5.3", -- keep in sync with _meta.lua and the release tag
     PREGEN_DELAY_S = 20, -- background pre-generation waits this long after book open
     OFFER_DELAY_S = 2, -- catch-up offer check runs this long after open/resume
     ROLL_LIMIT = 10, -- drift guard: max rolls before a re-grounded refresh
@@ -201,6 +201,7 @@ function KoCatchup.updater_message(err, code)
         extract_failed = _("The update package could not be unpacked (it may be unsupported on this build). Your installed version is unchanged."),
         validate_failed = _("The downloaded update was incomplete and was discarded. Your installed version is unchanged."),
         bad_response = _("The update service returned an unexpected response. Try again later."),
+        install_crashed = _("The updater hit an unexpected error while installing. Your installed version is unchanged."),
     }
     if err == "http_error" then
         return _("Couldn't reach the update service.") .. " (HTTP " .. tostring(code) .. ")"
@@ -274,7 +275,10 @@ function KoCatchup:installUpdate(rel)
         -- e-ink UI never freezes during download; the child returns a plain
         -- table over the pipe.
         local completed, result = Trapper:dismissableRunInSubprocess(function()
-            local ok, err, detail = Updater.run(paths)
+            -- pcall so a crash in the child still reports a typed error over
+            -- the pipe instead of surfacing as an opaque "Update failed: nil".
+            local pok, ok, err, detail = pcall(Updater.run, paths)
+            if not pok then return { err = "install_crashed", detail = tostring(ok) } end
             return { ok = ok, err = err, detail = detail }
         end, _("KO Catchup: downloading and installing update...\nTap to cancel."))
 
