@@ -6,7 +6,7 @@
 --
 -- Usage:  luajit spec/integration_ollama.lua [model]
 -- Requires: an Ollama server on http://localhost:11434 with the model pulled.
-package.path = "./kocatchup.koplugin/?.lua;" .. package.path
+package.path = "./?.lua;" .. package.path
 
 local Llm = require("kocatchup_llm")
 local Prompts = require("kocatchup_prompts")

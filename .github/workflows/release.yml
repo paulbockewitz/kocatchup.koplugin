@@ -21,8 +21,8 @@ jobs:
       - name: Verify VERSION matches the tag
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          meta=$(sed -n 's/.*version[[:space:]]*=[[:space:]]*"\([0-9.]*\)".*/\1/p' kocatchup.koplugin/_meta.lua | head -1)
-          main=$(sed -n 's/.*VERSION[[:space:]]*=[[:space:]]*"\([0-9.]*\)".*/\1/p' kocatchup.koplugin/main.lua | head -1)
+          meta=$(sed -n 's/.*version[[:space:]]*=[[:space:]]*"\([0-9.]*\)".*/\1/p' _meta.lua | head -1)
+          main=$(sed -n 's/.*VERSION[[:space:]]*=[[:space:]]*"\([0-9.]*\)".*/\1/p' main.lua | head -1)
           echo "tag=$tag  _meta=$meta  main=$main"
           if [ "$tag" != "$meta" ] || [ "$tag" != "$main" ]; then
             echo "::error::VERSION mismatch: tag=$tag _meta.lua=$meta main.lua=$main"
@@ -30,8 +30,13 @@ jobs:
           fi
 
       - name: Build release asset
+        # The repo keeps the plugin at its root (koreader/contrib submodule
+        # layout); the asset must still contain a kocatchup.koplugin/ top-level
+        # folder because the on-device updater extracts and swaps exactly that.
         run: |
-          zip -r "kocatchup-${GITHUB_REF_NAME#v}.zip" kocatchup.koplugin
+          mkdir -p build/kocatchup.koplugin
+          cp *.lua build/kocatchup.koplugin/
+          (cd build && zip -r "../kocatchup-${GITHUB_REF_NAME#v}.zip" kocatchup.koplugin)
           unzip -l "kocatchup-${GITHUB_REF_NAME#v}.zip" | grep -q "kocatchup.koplugin/main.lua"
 
       - name: Attach asset to the release

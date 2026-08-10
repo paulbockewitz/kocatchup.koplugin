@@ -18,7 +18,7 @@ KO Catchup generates a spoiler-safe AI catch-up recap of the book you're reading
 
 ## Installation
 
-1. Download the latest [release zip](https://github.com/paulbockewitz/kocatchup.koplugin/releases) and unzip it to get the `kocatchup.koplugin` folder (or clone this repo and use that folder).
+1. Download the latest [release zip](https://github.com/paulbockewitz/kocatchup.koplugin/releases) and unzip it to get the `kocatchup.koplugin` folder (or clone this repo as `kocatchup.koplugin` — the repo root is the plugin, [koreader/contrib](https://github.com/koreader/contrib) submodule style).
 2. Copy the **whole folder** into KOReader's `plugins` directory on your device:
    - **Kobo:** `/mnt/onboard/.adds/koreader/plugins/`
    - **Kindle (jailbroken):** `/mnt/us/koreader/plugins/`
@@ -74,8 +74,8 @@ Open a book, then: Tools → KO Catchup → Settings.
 ## Development
 
 ```
-kocatchup.koplugin/   the plugin (copy this folder to your device)
-spec/                  busted-compatible unit tests + KOReader module mocks
+./                    the plugin itself (*.lua at the repo root, contrib-submodule layout)
+spec/                 busted-compatible unit tests + KOReader module mocks
 ```
 
 Run the tests with [busted](https://lunarmodules.github.io/busted/) (`busted spec`) or, with no dependencies beyond LuaJIT, via the bundled mini-runner:
@@ -92,11 +92,7 @@ With an Ollama server running locally, `luajit spec/integration_ollama.lua [mode
 
 ## Release packaging
 
-A release zip contains just the plugin folder, so it can be unzipped straight into `plugins/`:
-
-```sh
-zip -r kocatchup-<version>.zip kocatchup.koplugin
-```
+A release zip contains a `kocatchup.koplugin/` folder (what the on-device updater extracts and swaps), so it can be unzipped straight into `plugins/`. CI stages the root `*.lua` files into that folder at build time — see `.github/workflows/release.yml`.
 
 ## Credits and license
 

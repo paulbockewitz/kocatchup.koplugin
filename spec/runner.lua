@@ -5,7 +5,7 @@
 -- assert.is_nil, assert.is_not_nil, assert.truthy, assert.has_error).
 -- With real busted installed, run `busted spec` instead — the spec files
 -- themselves are busted-compatible.
-package.path = "./kocatchup.koplugin/?.lua;./spec/?.lua;" .. package.path
+package.path = "./?.lua;./spec/?.lua;" .. package.path
 
 local passed = 0
 local failures = {}

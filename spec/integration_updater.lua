@@ -6,7 +6,7 @@
 --
 -- Usage:  luajit spec/integration_updater.lua
 -- Requires: network access, curl, and sha256sum (or shasum) on PATH.
-package.path = "./kocatchup.koplugin/?.lua;" .. package.path
+package.path = "./?.lua;" .. package.path
 
 local Updater = require("kocatchup_updater")
 
