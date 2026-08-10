@@ -11,6 +11,7 @@ local passed = 0
 local failures = {}
 local context_names = {}
 local current_before
+local current_after
 
 local function serialize(v, depth)
     depth = depth or 0
@@ -88,9 +89,9 @@ _G.assert = assert_shim
 
 function _G.describe(name, fn)
     table.insert(context_names, name)
-    local saved_before = current_before
+    local saved_before, saved_after = current_before, current_after
     fn()
-    current_before = saved_before
+    current_before, current_after = saved_before, saved_after
     table.remove(context_names)
 end
 
@@ -98,10 +99,15 @@ function _G.before_each(fn)
     current_before = fn
 end
 
+function _G.after_each(fn)
+    current_after = fn
+end
+
 function _G.it(name, fn)
     local full = table.concat(context_names, " > ") .. " > " .. name
     if current_before then current_before() end
     local ok, err = xpcall(fn, debug.traceback)
+    if current_after then pcall(current_after) end
     if ok then
         passed = passed + 1
         io.write(".")
@@ -118,7 +124,8 @@ if select("#", ...) > 0 then
     for i = 1, select("#", ...) do specs[#specs + 1] = (select(i, ...)) end
 else
     specs = {
-        "extractor_spec", "prompts_spec", "llm_spec", "cache_spec", "main_spec",
+        "extractor_spec", "prompts_spec", "llm_spec", "cache_spec",
+        "updater_spec", "main_spec",
     }
 end
 

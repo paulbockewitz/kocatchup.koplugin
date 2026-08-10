@@ -18,7 +18,7 @@ KO Catchup generates a spoiler-safe AI catch-up recap of the book you're reading
 
 ## Installation
 
-1. Download this repository (or a release zip) and locate the `kocatchup.koplugin` folder.
+1. Download the latest [release zip](https://github.com/paulbockewitz/kocatchup.koplugin/releases) and unzip it to get the `kocatchup.koplugin` folder (or clone this repo and use that folder).
 2. Copy the **whole folder** into KOReader's `plugins` directory on your device:
    - **Kobo:** `/mnt/onboard/.adds/koreader/plugins/`
    - **Kindle (jailbroken):** `/mnt/us/koreader/plugins/`
@@ -26,6 +26,10 @@ KO Catchup generates a spoiler-safe AI catch-up recap of the book you're reading
    - **Android:** `koreader/plugins/` in KOReader's storage directory
    - **Desktop (Linux/macOS):** `~/.config/koreader/plugins/`
 3. Restart KOReader. With a book open, find **KO Catchup** in the Tools menu.
+
+### Updating
+
+Once installed, open a book and use **Tools → KO Catchup → Settings → Check for updates** to update over Wi-Fi — the plugin fetches the latest release, verifies it, and installs it in place (your settings and cached recaps are preserved). Updates download only over a verified TLS connection and are integrity-checked against the release's published checksum. If an update is ever interrupted, your installed version keeps working, and you can always re-copy the folder over USB as above.
 
 Tested against KOReader **2026.07** (KOReader has no stable plugin API; other versions may need adjustments — please open an issue).
 
@@ -57,6 +61,7 @@ Open a book, then: Tools → KO Catchup → Settings.
 ## Privacy and security
 
 - **Book text leaves your device.** Generating a recap sends up to *Max input size* characters of the current book (plus title/author) to the endpoint you configured, at your expense. Nothing is ever sent without an explicit tap — unless you opt into *Pre-generate on book open*, which sends book text automatically after opening a book (that's its purpose; leave it off if you don't want automatic sending). For full privacy, use Ollama on your own machine.
+- **Update checks contact GitHub only when you tap Check for updates** — there is no automatic phoning home. The check reads this repo's public releases; no personal data is sent.
 - **Your API key is stored unencrypted** in KOReader's settings directory (`settings/kocatchup.lua`). Anyone with filesystem access to the device can read it — use device-level lock/encryption where available, and prefer revocable, spend-limited keys.
 - **TLS:** HTTPS connections verify the server certificate against KOReader's bundled CA store when present. If you enter a plain `http://` base URL for a remote host, the plugin warns you before saving it (local Ollama over `http://localhost` is fine).
 

@@ -1,0 +1,40 @@
+name: Release
+
+# Machine-enforced release discipline (KTD6): a vX.Y.Z tag builds and attaches
+# the exact asset the in-app updater expects, and fails if the plugin's VERSION
+# does not match the tag — so a forgotten or misnamed asset is impossible.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify VERSION matches the tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          meta=$(sed -n 's/.*version[[:space:]]*=[[:space:]]*"\([0-9.]*\)".*/\1/p' kocatchup.koplugin/_meta.lua | head -1)
+          main=$(sed -n 's/.*VERSION[[:space:]]*=[[:space:]]*"\([0-9.]*\)".*/\1/p' kocatchup.koplugin/main.lua | head -1)
+          echo "tag=$tag  _meta=$meta  main=$main"
+          if [ "$tag" != "$meta" ] || [ "$tag" != "$main" ]; then
+            echo "::error::VERSION mismatch: tag=$tag _meta.lua=$meta main.lua=$main"
+            exit 1
+          fi
+
+      - name: Build release asset
+        run: |
+          zip -r "kocatchup-${GITHUB_REF_NAME#v}.zip" kocatchup.koplugin
+          unzip -l "kocatchup-${GITHUB_REF_NAME#v}.zip" | grep -q "kocatchup.koplugin/main.lua"
+
+      - name: Attach asset to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: kocatchup-*.zip

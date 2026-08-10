@@ -18,11 +18,89 @@ local Extractor = require("kocatchup_extractor")
 local Llm = require("kocatchup_llm")
 local Prompts = require("kocatchup_prompts")
 local Settings = require("kocatchup_settings")
+local Updater = require("kocatchup_updater")
+
+-- Real updater seams, bound lazily at the first real check so they never
+-- pull device-only modules under unit tests (each closure requires on call).
+local function real_updater_transport(req)
+    local http = require("socket.http")
+    local ltn12 = require("ltn12")
+    local socketutil = require("socketutil")
+    local chunks = {}
+    local reqt = {
+        url = req.url,
+        method = req.method or "GET",
+        headers = req.headers,
+        sink = ltn12.sink.table(chunks),
+    }
+    if req.url:lower():sub(1, 6) == "https:" then
+        -- Pass the TLS-parameterized factory on the caller's table so
+        -- verification survives GitHub's cross-host redirect (KTD2): luasocket
+        -- carries only `create` to the redirected hop.
+        reqt.create = require("ssl.https").tcp{
+            verify = "peer",
+            cafile = Llm.find_ca_bundle(),
+            protocol = "any",
+            options = { "all", "no_sslv2", "no_sslv3" },
+        }
+    end
+    socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT)
+    local ok, code = http.request(reqt)
+    socketutil:reset_timeout()
+    if not ok then return nil, tostring(code) end
+    return table.concat(chunks), code
+end
+
+local function real_updater_extract(zip_path, dest)
+    local ok_arc, Archiver = pcall(require, "ffi/archiver")
+    if not ok_arc then return nil, "extract_failed" end
+    local util = require("ffi/util")
+    util.makePath(dest)
+    local arc = Archiver.Reader:new()
+    if not arc:open(zip_path) then return nil, "extract_failed" end
+    local total = 0
+    for entry in arc:iterate() do
+        if Updater.unsafe_entry(entry.path) then
+            arc:close(); return nil, "unsafe_entry"
+        end
+        total = total + (tonumber(entry.size) or 0)
+        if total > Updater.MAX_BYTES then
+            arc:close(); return nil, "extract_failed"
+        end
+        if not arc:extractToPath(entry.path, dest .. "/" .. entry.path) then
+            arc:close(); return nil, "extract_failed"
+        end
+    end
+    arc:close()
+    return true
+end
+
+local function real_updater_fs()
+    local function lfs() return require("libs/libkoreader-lfs") end
+    local function ffiutil() return require("ffi/util") end
+    return {
+        exists = function(p) return lfs().attributes(p, "mode") ~= nil end,
+        purge = function(p) pcall(function() ffiutil().purgeDir(p) end) end,
+        rename = function(a, b) return os.rename(a, b) end,
+        write = function(p, bytes)
+            local dir = p:match("^(.*)[/\\][^/\\]+$")
+            if dir then ffiutil().makePath(dir) end
+            local f = io.open(p, "wb")
+            if f then f:write(bytes); f:close() end
+        end,
+        read = function(p)
+            local f = io.open(p, "r")
+            if not f then return nil end
+            local t = f:read("*a"); f:close(); return t
+        end,
+        loadcheck = function(p) return loadfile(p) ~= nil end,
+    }
+end
 
 local KoCatchup = WidgetContainer:extend{
     name = "kocatchup",
     is_doc_only = true,
-    VERSION = "0.4.0", -- keep in sync with _meta.lua and the release tag
+    VERSION = "0.5.0", -- keep in sync with _meta.lua and the release tag
     PREGEN_DELAY_S = 20, -- background pre-generation waits this long after book open
     OFFER_DELAY_S = 2, -- catch-up offer check runs this long after open/resume
     ROLL_LIMIT = 10, -- drift guard: max rolls before a re-grounded refresh
@@ -83,7 +161,109 @@ function KoCatchup:getSettingsMenuItems()
         text = _("Regenerate full recap"),
         callback = function() self:onRegenerateFullRecap() end,
     })
+    table.insert(items, {
+        text = _("Check for updates"),
+        keep_menu_open = true,
+        callback = function() self:onCheckForUpdates() end,
+    })
     return items
+end
+
+-- Typed updater failures → user-facing messages (kept separate from recap
+-- errors; pure for tests).
+function KoCatchup.updater_message(err, code)
+    local messages = {
+        tls_unavailable = _("A verified secure connection is required to download updates, and none is available on this device. Please update via USB instead."),
+        no_asset = _("The latest release has no installable package yet. Try again later."),
+        download_failed = _("The update download didn't complete. Check your connection and try again."),
+        digest_mismatch = _("The downloaded update failed its integrity check and was discarded. Your installed version is unchanged."),
+        unsafe_entry = _("The update package was rejected as unsafe and discarded. Your installed version is unchanged."),
+        extract_failed = _("The update package could not be unpacked (it may be unsupported on this build). Your installed version is unchanged."),
+        validate_failed = _("The downloaded update was incomplete and was discarded. Your installed version is unchanged."),
+        bad_response = _("The update service returned an unexpected response. Try again later."),
+    }
+    if err == "http_error" then
+        return _("Couldn't reach the update service.") .. " (HTTP " .. tostring(code) .. ")"
+    end
+    return messages[err] or (_("Update failed: ") .. tostring(err))
+end
+
+function KoCatchup:ensureUpdaterSeams()
+    if Updater.transport then return end -- tests inject their own seams
+    Updater.transport = real_updater_transport
+    Updater.hasher = function(bytes) return require("ffi/sha2").sha256(bytes) end
+    Updater.archiver = { extract = real_updater_extract }
+    Updater.fs = real_updater_fs()
+end
+
+function KoCatchup:updaterPaths(rel)
+    local live = self.path or "."
+    local parent = live:match("^(.*)[/\\][^/\\]+$") or "."
+    local staging = parent .. "/kocatchup.staging"
+    return {
+        live = live,
+        staging = staging,
+        staged_plugin = staging .. "/kocatchup.koplugin",
+        backup = parent .. "/kocatchup.bak", -- not *.koplugin: loader must ignore it
+        download = staging .. "/kocatchup-update.zip",
+        url = rel.asset_url,
+        digest = rel.digest,
+        tag = rel.version,
+    }
+end
+
+-- Manual update check. Verified TLS is mandatory: with no CA bundle we abort
+-- before any network request rather than downloading code unverified.
+function KoCatchup:onCheckForUpdates()
+    self:ensureUpdaterSeams()
+    if not Llm.find_ca_bundle() then
+        UIManager:show(InfoMessage:new{ text = self.updater_message("tls_unavailable") })
+        return true
+    end
+    Trapper:wrap(function()
+        Trapper:info(_("KO Catchup: checking for updates…"))
+        local rel, err, code = Updater.check(self.VERSION)
+        if Trapper.clear then Trapper:clear() end
+        if not rel then
+            UIManager:show(InfoMessage:new{ text = self.updater_message(err, code) })
+            return
+        end
+        if not rel.newer then
+            UIManager:show(InfoMessage:new{
+                text = _("KO Catchup ") .. self.VERSION .. _(" is up to date."),
+            })
+            return
+        end
+        -- ConfirmBox is non-blocking; its callback opens a fresh wrap for the
+        -- install pipeline (matching the generate flow's structure).
+        UIManager:show(ConfirmBox:new{
+            text = _("Update available: ") .. self.VERSION .. " \u{2192} " .. rel.version
+                .. _(". Download and install it now?"),
+            ok_text = _("Update"),
+            cancel_text = _("Not now"),
+            ok_callback = function() self:installUpdate(rel) end,
+        })
+    end)
+    return true
+end
+
+function KoCatchup:installUpdate(rel)
+    local paths = self:updaterPaths(rel)
+    Trapper:wrap(function()
+        Trapper:info(_("KO Catchup: downloading and installing update…"))
+        local ok, err = Updater.run(paths)
+        if Trapper.clear then Trapper:clear() end
+        if ok then
+            local msg = _("KO Catchup updated to ") .. rel.version
+                .. _(". Restart KOReader to use the new version.")
+            local restarted = pcall(function() UIManager:askForRestart(msg) end)
+            if not restarted then
+                UIManager:show(InfoMessage:new{ text = msg })
+            end
+        else
+            UIManager:show(InfoMessage:new{ text = self.updater_message(err) })
+        end
+    end)
 end
 
 -- Current position as an opaque identity key plus a comparable percent.

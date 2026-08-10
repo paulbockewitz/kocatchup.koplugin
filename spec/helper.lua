@@ -5,6 +5,7 @@ local H = {
     trapper_infos = {},  -- Trapper:info messages
     settings_stores = {},-- LuaSettings backing stores, keyed by path
     scheduled = {},      -- { delay_s, fn } pairs from UIManager:scheduleIn
+    restart_prompts = {},-- messages passed to UIManager:askForRestart
     run_when_online_calls = 0,
     network_online = true,
 }
@@ -14,6 +15,7 @@ function H.reset()
     H.trapper_infos = {}
     H.settings_stores = {}
     H.scheduled = {}
+    H.restart_prompts = {}
     H.run_when_online_calls = 0
     H.network_online = true
 end
@@ -101,6 +103,7 @@ package.preload["ui/uimanager"] = function()
                 if H.scheduled[i][2] == fn then table.remove(H.scheduled, i) end
             end
         end,
+        askForRestart = function(_, msg) table.insert(H.restart_prompts, msg) end,
     }
 end
 

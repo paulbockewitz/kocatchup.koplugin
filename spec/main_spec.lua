@@ -505,7 +505,9 @@ describe("main (rolling incremental recaps)", function()
         local menu_items = {}
         plugin:addToMainMenu(menu_items)
         local settings_items = menu_items.kocatchup.sub_item_table[2].sub_item_table
-        assert.are.equal("Regenerate full recap", settings_items[#settings_items].text)
+        local labels = {}
+        for _, it in ipairs(settings_items) do labels[it.text] = true end
+        assert.truthy(labels["Regenerate full recap"])
         local t = capture_transport()
 
         plugin:onRegenerateFullRecap()
@@ -758,5 +760,119 @@ describe("main (auto-offer catch-up on reopen)", function()
 
         assert.are.equal(0, #H.shown)
         assert.is_nil(ui.doc_settings.data.kocatchup)
+    end)
+end)
+
+describe("main (check for updates flow)", function()
+    local Updater = require("kocatchup_updater")
+    local Llm = require("kocatchup_llm")
+
+    local orig_find_ca
+    before_each(function()
+        H.reset()
+        Llm.transport = nil
+        Updater.transport, Updater.hasher, Updater.archiver, Updater.fs = nil, nil, nil, nil
+        orig_find_ca = Llm.find_ca_bundle
+        Llm.find_ca_bundle = function() return "/data/ca-bundle.crt" end
+    end)
+    after_each(function()
+        Llm.find_ca_bundle = orig_find_ca
+    end)
+
+    local RELEASE = '{"tag_name":"v9.9.9","assets":[{"name":"kocatchup-9.9.9.zip",'
+        .. '"browser_download_url":"https://x/kocatchup-9.9.9.zip","digest":"sha256:hh"}]}'
+    local SAME = '{"tag_name":"v' .. Main.VERSION .. '","assets":[{"name":"kocatchup-'
+        .. Main.VERSION .. '.zip","browser_download_url":"u","digest":"sha256:hh"}]}'
+
+    local function updater_plugin()
+        local ui = make_ui("text", 50)
+        local plugin = make_plugin(ui)
+        plugin.path = "/mnt/plugins/kocatchup.koplugin"
+        return plugin
+    end
+
+    it("adds 'Check for updates' as the last Settings item", function()
+        local menu_items = {}
+        updater_plugin():addToMainMenu(menu_items)
+        local settings = menu_items.kocatchup.sub_item_table[2].sub_item_table
+        assert.are.equal("Check for updates", settings[#settings].text)
+    end)
+
+    it("reports up to date without offering a download", function()
+        Updater.transport = function() return SAME, 200 end
+        local downloaded = false
+        Updater.fs = { exists = function() downloaded = true return false end }
+        updater_plugin():onCheckForUpdates()
+        local info = H.last_shown("InfoMessage")
+        assert.truthy(info.text:find("up to date", 1, true))
+        assert.is_false(downloaded)
+        assert.is_nil(H.last_shown("ConfirmBox"))
+    end)
+
+    it("offers an update, and confirming runs the pipeline then prompts restart", function()
+        Updater.transport = function() return RELEASE, 200 end
+        local ran = false
+        -- After the check returns, installUpdate re-enters run(); stub run via seams:
+        Updater.hasher = function() return "hh" end
+        Updater.archiver = { extract = function() return true end }
+        Updater.fs = {
+            exists = function(p) return p:find("kocatchup.koplugin") ~= nil end,
+            purge = function() end,
+            rename = function() ran = true end,
+            write = function() end,
+            read = function() return 'version = "9.9.9"' end,
+            loadcheck = function() return true end,
+        }
+        local plugin = updater_plugin()
+
+        plugin:onCheckForUpdates()
+        local box = H.last_shown("ConfirmBox")
+        assert.is_not_nil(box)
+        assert.are.equal("Update", box.ok_text)
+        assert.truthy(box.text:find("9.9.9", 1, true))
+
+        box.ok_callback()
+        assert.is_true(ran, "pipeline renames should run on confirm")
+        assert.truthy(#H.restart_prompts > 0, "should prompt for restart")
+    end)
+
+    it("aborts with tls_unavailable and no network when no CA bundle exists", function()
+        Llm.find_ca_bundle = function() return nil end
+        local touched = false
+        Updater.transport = function() touched = true return "{}", 200 end
+        updater_plugin():onCheckForUpdates()
+        local info = H.last_shown("InfoMessage")
+        assert.truthy(info.text:find("verified secure connection", 1, true))
+        assert.is_false(touched, "no network request without a CA bundle")
+    end)
+
+    it("surfaces a download failure and never renames", function()
+        Updater.transport = function() return RELEASE, 200 end
+        local renamed = false
+        Updater.hasher = function() return "hh" end
+        Updater.archiver = { extract = function() return true end }
+        Updater.fs = {
+            exists = function() return true end,
+            purge = function() end,
+            rename = function() renamed = true end,
+            write = function() end,
+            read = function() return 'version = "9.9.9"' end,
+            loadcheck = function() return true end,
+        }
+        local plugin = updater_plugin()
+        plugin:onCheckForUpdates()
+        -- swap the transport so the install-phase download fails
+        Updater.transport = function() return nil, "timeout" end
+        H.last_shown("ConfirmBox").ok_callback()
+        local info = H.last_shown("InfoMessage")
+        assert.truthy(info.text:find("didn't complete", 1, true))
+        assert.is_false(renamed)
+    end)
+
+    it("maps a rate-limit response to a typed message", function()
+        Updater.transport = function() return '{"message":"rate"}', 403 end
+        updater_plugin():onCheckForUpdates()
+        local info = H.last_shown("InfoMessage")
+        assert.truthy(info.text:find("HTTP 403", 1, true))
     end)
 end)
