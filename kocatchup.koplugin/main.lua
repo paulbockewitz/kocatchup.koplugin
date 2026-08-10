@@ -120,7 +120,7 @@ end
 local KoCatchup = WidgetContainer:extend{
     name = "kocatchup",
     is_doc_only = true,
-    VERSION = "0.5.3", -- keep in sync with _meta.lua and the release tag
+    VERSION = "0.5.4", -- keep in sync with _meta.lua and the release tag
     PREGEN_DELAY_S = 20, -- background pre-generation waits this long after book open
     OFFER_DELAY_S = 2, -- catch-up offer check runs this long after open/resume
     ROLL_LIMIT = 10, -- drift guard: max rolls before a re-grounded refresh
