@@ -48,6 +48,8 @@ describe("main (kocatchup plugin)", function()
     it("loads under mocks with the expected identity", function()
         assert.are.equal("kocatchup", Main.name)
         assert.is_true(Main.is_doc_only)
+        assert.truthy(Main.VERSION:match("^%d+%.%d+%.%d+$"))
+        assert.are.equal(dofile("kocatchup.koplugin/_meta.lua").version, Main.VERSION)
     end)
 
     it("produces a distinct message for every error type", function()

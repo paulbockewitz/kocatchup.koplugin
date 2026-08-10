@@ -22,6 +22,7 @@ local Settings = require("kocatchup_settings")
 local KoCatchup = WidgetContainer:extend{
     name = "kocatchup",
     is_doc_only = true,
+    VERSION = "0.2.0", -- keep in sync with _meta.lua and the release tag
     PREGEN_DELAY_S = 20, -- background pre-generation waits this long after book open
 }
 
