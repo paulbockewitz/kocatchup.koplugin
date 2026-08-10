@@ -10,7 +10,8 @@ KO Catchup generates a spoiler-safe AI catch-up recap of the book you're reading
 - Works with EPUB/FB2/HTML/MOBI (crengine); best-effort for PDF/DjVu with a text layer. Image-only PDFs are detected and refused with a clear message.
 - Providers: any **OpenAI-compatible** chat-completions endpoint (OpenAI, OpenRouter, Groq, self-hosted **Ollama**) or the **Anthropic** messages API.
 - Recap length presets (short / standard / detailed).
-- Per-book caching: re-opening a recap at the same position is instant and works offline; if you've read further, you choose between the saved recap and a fresh one.
+- Per-book caching: re-opening a recap at the same position is instant and works offline; if you've read further, you choose between the saved recap and an update.
+- Rolling incremental updates: updating a recap sends only the previous recap plus the text you've read since — fast and cheap at regular update cadences (a long reading gap costs like a full generation) — and coverage of earlier events accumulates as you read. A drift guard periodically re-grounds the recap against the actual book text, and Settings → "Regenerate full recap" forces a from-scratch recap anytime.
 - Optional background pre-generation: opt in and a recap is silently prepared shortly after you open a book (only when Wi-Fi is already on), so viewing it is instant.
 - Cancellable generation: the network call runs in a subprocess — tap to cancel; the UI never freezes.
 
@@ -58,7 +59,7 @@ Open a book, then: Tools → KO Catchup → Settings.
 
 ## Known limitations
 
-- **Long books:** only the most recent ~100k characters (about a normal-length novel's worth) before your position are summarized. On very long books, early events may be missing from the recap. Full-book chunked summarization is planned follow-up work.
+- **Long books:** a *from-scratch* recap summarizes only the most recent ~100k characters (about a normal-length novel's worth) before your position, so on very long books its coverage of early events is limited. Rolling updates fix this over time — if you recap as you read, earlier events stay covered because each update builds on the previous recap.
 - **PDF/DjVu:** page-text extraction is noisy, and the lookback is capped at 250 pages before your current page.
 - Series-level recaps (Kindle's "Recaps" across earlier books in a series) are out of scope for now.
 

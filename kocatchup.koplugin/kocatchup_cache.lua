@@ -47,4 +47,32 @@ function Cache.compare(entry, pos, cfg)
     return "behind"
 end
 
+-- Returns the raw position usable as a delta-extraction start point:
+-- { xpointer = ... } or { page = ... }, or nil when unrecoverable.
+-- Prefers explicit fields (schema v2); falls back to parsing the identity
+-- key so entries written by 0.2.0 remain rollable.
+function Cache.rollable_position(entry)
+    if type(entry) ~= "table" then return nil end
+    if type(entry.xpointer) == "string" and entry.xpointer ~= "" then
+        return { xpointer = entry.xpointer }
+    end
+    if tonumber(entry.page) then
+        return { page = tonumber(entry.page) }
+    end
+    if type(entry.position) == "string" then
+        local xp = entry.position:match("^xp:(.+)$")
+        if xp then return { xpointer = xp } end
+        local page = entry.position:match("^page:(%d+)$")
+        if page then return { page = tonumber(page) } end
+    end
+    return nil
+end
+
+-- Drift counters with schema-v1 defaults.
+function Cache.counters(entry)
+    local rolls = tonumber(entry and entry.roll_count) or 0
+    local chars = tonumber(entry and entry.rolled_chars) or 0
+    return rolls, chars
+end
+
 return Cache

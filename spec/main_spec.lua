@@ -320,3 +320,264 @@ describe("main (background pre-generation)", function()
         assert.are.equal(0, #H.scheduled)
     end)
 end)
+
+describe("main (rolling incremental recaps)", function()
+    local Json = require("kocatchup_json")
+
+    before_each(function()
+        H.reset()
+        Llm.transport = nil
+    end)
+
+    -- crengine ui where full extraction returns opts.fulltext and range
+    -- extraction returns opts.deltas[from_xpointer]; page numbers per xpointer.
+    local function make_roll_ui(opts)
+        local doc = { info = { has_pages = false }, _at_start = false }
+        function doc:getXPointer() return self._at_start and "xp_start" or "xp_cur" end
+        function doc:gotoPos(_p) self._at_start = true end
+        function doc:gotoXPointer(xp) self._at_start = (xp == "xp_start") end
+        function doc:getTextFromXPointers(a, _b)
+            if a == "xp_start" then return opts.fulltext end
+            return opts.deltas and opts.deltas[a]
+        end
+        function doc:getProps() return { title = "The Book" } end
+        function doc:getPageFromXPointer(xp)
+            if xp == "xp_cur" then return opts.current_page or 50 end
+            return opts.pages and opts.pages[xp]
+        end
+        function doc:getPageCount() return 100 end
+        return {
+            document = doc,
+            toc = { getTocTitleByPage = function(_, page) return "Chapter " .. page end },
+            doc_settings = H.make_doc_settings(),
+            menu = { registerToMainMenu = function() end },
+        }
+    end
+
+    local FULLTEXT = string.rep("EARLYBOOK ", 200)
+    local DELTA = string.rep("newpages ", 60)
+
+    local function roll_entry(overrides)
+        local e = {
+            recap = "old recap text", position = "xp:xp_old",
+            xpointer = "xp_old", page = 40, percent = 0.4,
+            model = "test-model", recap_length = "standard",
+            roll_count = 2, rolled_chars = 5000, timestamp = 1,
+        }
+        for k, v in pairs(overrides or {}) do e[k] = v end
+        return e
+    end
+
+    local function make_roll_plugin(entry, opts)
+        configure_ollama()
+        local ui = make_roll_ui(opts or { fulltext = FULLTEXT, deltas = { xp_old = DELTA } })
+        if entry then ui.doc_settings:saveSetting("kocatchup", entry) end
+        return make_plugin(ui), ui
+    end
+
+    local function capture_transport()
+        local captured = {}
+        Llm.transport = function(req)
+            captured.req = req
+            captured.user = Json.decode(req.body).messages[2].content
+            return OPENAI_OK, 200
+        end
+        return captured
+    end
+
+    local function tap_update(plugin)
+        plugin:onKoCatchupGenerate()
+        local box = H.last_shown("ConfirmBox")
+        assert.is_not_nil(box, "expected the behind-state dialog")
+        assert.are.equal("Update recap", box.ok_text)
+        box.ok_callback()
+    end
+
+    it("rolls: sends previous recap + delta only, updates counters and position", function()
+        local plugin, ui = make_roll_plugin(roll_entry())
+        local t = capture_transport()
+
+        tap_update(plugin)
+
+        assert.truthy(t.user:find("old recap text", 1, true))
+        assert.truthy(t.user:find("newpages", 1, true))
+        assert.is_nil(t.user:find("EARLYBOOK", 1, true))
+        local cached = ui.doc_settings.data.kocatchup
+        assert.are.equal("xp:xp_cur", cached.position)
+        assert.are.equal("xp_cur", cached.xpointer)
+        assert.are.equal(50, cached.page)
+        assert.are.equal(3, cached.roll_count)
+        assert.are.equal(5000 + #DELTA, cached.rolled_chars)
+    end)
+
+    it("re-grounds at the roll-count limit: tail text plus previous recap, counters reset", function()
+        local plugin, ui = make_roll_plugin(roll_entry({ roll_count = 10 }))
+        local t = capture_transport()
+
+        tap_update(plugin)
+
+        assert.truthy(t.user:find("EARLYBOOK", 1, true))
+        assert.truthy(t.user:find("old recap text", 1, true))
+        local cached = ui.doc_settings.data.kocatchup
+        assert.are.equal(0, cached.roll_count)
+        assert.are.equal(0, cached.rolled_chars)
+    end)
+
+    it("re-grounds when rolled volume exceeds the extraction window", function()
+        local plugin = make_roll_plugin(roll_entry({ rolled_chars = 200000 }))
+        local t = capture_transport()
+
+        tap_update(plugin)
+
+        assert.truthy(t.user:find("EARLYBOOK", 1, true))
+        assert.truthy(t.user:find("old recap text", 1, true))
+    end)
+
+    it("runs full generation when settings changed on the advanced path", function()
+        local plugin = make_roll_plugin(roll_entry({ recap_length = "short" }))
+        local t = capture_transport()
+
+        plugin:onKoCatchupGenerate()
+        local box = H.last_shown("ConfirmBox")
+        box.ok_callback()
+
+        assert.truthy(t.user:find("EARLYBOOK", 1, true))
+        assert.is_nil(t.user:find("old recap text", 1, true))
+    end)
+
+    it("runs full generation when the delta direction cannot be proven forward", function()
+        -- Percent says behind, but the cached page is at/after the current page.
+        local plugin = make_roll_plugin(roll_entry({ percent = 0.3, page = 60 }))
+        local t = capture_transport()
+
+        tap_update(plugin)
+
+        assert.truthy(t.user:find("EARLYBOOK", 1, true))
+    end)
+
+    it("rolls legacy v1 entries by parsing the identity key", function()
+        local entry = roll_entry()
+        entry.xpointer = nil
+        entry.page = nil -- key "xp:xp_old" remains; page resolved via document
+        local plugin = make_roll_plugin(entry, {
+            fulltext = FULLTEXT, deltas = { xp_old = DELTA }, pages = { xp_old = 40 },
+        })
+        local t = capture_transport()
+
+        tap_update(plugin)
+
+        assert.truthy(t.user:find("old recap text", 1, true))
+        assert.is_nil(t.user:find("EARLYBOOK", 1, true))
+    end)
+
+    it("manual update rolls any non-empty delta, however small", function()
+        local plugin = make_roll_plugin(roll_entry(), {
+            fulltext = FULLTEXT, deltas = { xp_old = "tiny" },
+        })
+        local t = capture_transport()
+
+        tap_update(plugin)
+
+        assert.truthy(t.user:find("tiny", 1, true))
+        assert.is_nil(t.user:find("EARLYBOOK", 1, true))
+    end)
+
+    it("manual update with an empty range falls back to full generation", function()
+        local plugin = make_roll_plugin(roll_entry(), {
+            fulltext = FULLTEXT, deltas = { xp_old = "" },
+        })
+        local t = capture_transport()
+
+        tap_update(plugin)
+
+        assert.truthy(t.user:find("EARLYBOOK", 1, true))
+        for _, w in ipairs(H.shown) do
+            if w.__widget == "InfoMessage" then
+                assert.is_nil(w.text:find("Image-only", 1, true))
+            end
+        end
+    end)
+
+    it("exposes Regenerate-full-recap in Settings and forces full even on a cache hit", function()
+        local plugin, ui = make_roll_plugin(roll_entry({
+            position = "xp:xp_cur", xpointer = "xp_cur", page = 50, percent = 0.5,
+        }))
+        local menu_items = {}
+        plugin:addToMainMenu(menu_items)
+        local settings_items = menu_items.kocatchup.sub_item_table[2].sub_item_table
+        assert.are.equal("Regenerate full recap", settings_items[#settings_items].text)
+        local t = capture_transport()
+
+        plugin:onRegenerateFullRecap()
+
+        assert.truthy(t.user:find("EARLYBOOK", 1, true))
+        assert.is_nil(t.user:find("old recap text", 1, true))
+        assert.are.equal(0, ui.doc_settings.data.kocatchup.roll_count)
+    end)
+
+    it("escape hatch shows the spoiler guard before replacing an ahead recap", function()
+        local plugin = make_roll_plugin(roll_entry({ percent = 0.8, position = "xp:later" }))
+        Llm.transport = function() error("no generation before user confirms") end
+
+        plugin:onRegenerateFullRecap()
+
+        local box = H.last_shown("ConfirmBox")
+        assert.is_not_nil(box)
+        assert.truthy(box.text:find("later point", 1, true))
+        local t = capture_transport()
+        box.ok_callback()
+        assert.truthy(t.user:find("EARLYBOOK", 1, true))
+    end)
+
+    it("escape hatch runs the standard entry checks", function()
+        local ui = make_roll_ui({ fulltext = FULLTEXT })
+        local plugin = make_plugin(ui) -- defaults: no API key
+        plugin:onRegenerateFullRecap()
+        local info = H.last_shown("InfoMessage")
+        assert.truthy(info.text:find("No API key", 1, true))
+    end)
+
+    it("background pre-generation rolls silently when possible", function()
+        local plugin, ui = make_roll_plugin(roll_entry())
+        local cfg = Settings.load()
+        cfg.auto_generate = true
+        Settings.save(cfg)
+        local t = capture_transport()
+
+        plugin:onReaderReady()
+        H.fire_scheduled()
+
+        assert.truthy(t.user:find("old recap text", 1, true))
+        assert.is_nil(t.user:find("EARLYBOOK", 1, true))
+        assert.are.equal(0, #H.shown)
+        assert.are.equal(3, ui.doc_settings.data.kocatchup.roll_count)
+    end)
+
+    it("background pre-generation skips silently on a tiny delta", function()
+        local plugin, ui = make_roll_plugin(roll_entry(), {
+            fulltext = FULLTEXT, deltas = { xp_old = "tiny" },
+        })
+        local cfg = Settings.load()
+        cfg.auto_generate = true
+        Settings.save(cfg)
+        Llm.transport = function() error("tiny background delta must not generate") end
+
+        plugin:onReaderReady()
+        H.fire_scheduled()
+
+        assert.are.equal("old recap text", ui.doc_settings.data.kocatchup.recap)
+        assert.are.equal(0, #H.shown)
+    end)
+
+    it("roll-path provider failure keeps the old cache entry and shows the typed message", function()
+        local plugin, ui = make_roll_plugin(roll_entry())
+        Llm.transport = function() return '{"error":"boom"}', 500 end
+
+        tap_update(plugin)
+
+        local info = H.last_shown("InfoMessage")
+        assert.truthy(info.text:find("HTTP 500", 1, true))
+        assert.are.equal("old recap text", ui.doc_settings.data.kocatchup.recap)
+        assert.are.equal("xp:xp_old", ui.doc_settings.data.kocatchup.position)
+    end)
+end)

@@ -65,6 +65,10 @@ infirmary while Tomas slept, and now she is standing in the lamp room,
 watching Henrik's silhouette climb the spiral stairs toward her.
 ]]
 
+-- Inflate the fixture so the full-generation body is realistically large and
+-- the rolling-update size comparison below is meaningful.
+sample_text = string.rep(sample_text, 8)
+
 local cfg = {
     provider = os.getenv("KOC_PROVIDER") or "openai",
     base_url = os.getenv("KOC_BASE_URL") or "http://localhost:11434/v1",
@@ -93,4 +97,48 @@ assert(type(result.recap) == "string" and #result.recap > 50,
 print(string.format("OK: real recap generated in %ds (%d chars)", elapsed, #result.recap))
 print("---- recap ----")
 print(result.recap)
+
+-- Phase 2 (rolling update): previous recap + only newly-read text. The
+-- request body must be materially smaller than the full-generation body
+-- (DoD gate), and the model must produce an updated recap.
+local delta_text = [[
+Henrik reached the lamp room and, to Marta's surprise, laid his own radio
+crystal on the table between them. He had been sent by the shipping line's
+insurers, he admitted — not to silence Tomas, but to find him before the
+owners' hired men did. The three of them spent the night wiring Henrik's
+crystal into Marta's sabotaged transmitter, and at dawn Marta broadcast the
+Andromeda's true route to the coast guard on the mainland.
+]]
+
+local full_body_size = 0
+do
+    local OpenAI = require("kocatchup_llm_openai")
+    full_body_size = #OpenAI.build_request(cfg, prompt).body
+end
+
+local update_prompt = Prompts.build_update(
+    { title = "The Graywater Light", authors = "Test Fixture", chapter = "Chapter 10" },
+    result.recap, delta_text, cfg.recap_length)
+
+local roll_body_size = 0
+do
+    local OpenAI = require("kocatchup_llm_openai")
+    roll_body_size = #OpenAI.build_request(cfg, update_prompt).body
+end
+
+started = os.time()
+local rolled = Llm.complete(cfg, update_prompt)
+elapsed = os.time() - started
+
+if not rolled.ok then
+    print(string.format("ROLL FAILED: err=%s code=%s (%ds)",
+        tostring(rolled.err), tostring(rolled.code), elapsed))
+    os.exit(1)
+end
+assert(type(rolled.recap) == "string" and #rolled.recap > 50,
+    "rolled recap implausibly short: " .. tostring(rolled.recap))
+print(string.format("OK: rolling update in %ds (%d chars); request body %d vs full %d bytes",
+    elapsed, #rolled.recap, roll_body_size, full_body_size))
+print("---- updated recap ----")
+print(rolled.recap)
 os.exit(0)

@@ -100,6 +100,49 @@ local function extract_paged(ui)
     return table.concat(parts, "\n"), current
 end
 
+-- Extracts only the text between a stored position and the current position
+-- (the "delta" for rolling recap updates). `from` is { xpointer = ... } for
+-- crengine documents or { page = ... } for page-based ones.
+-- opts.min_delta_chars overrides the minimum (0 = roll any non-empty delta);
+-- background callers keep the default so trivial deltas are skippable.
+-- Returns the same shape and typed failures as Extractor.extract.
+function Extractor.extract_delta(ui, from, opts)
+    local max_chars = (opts and opts.max_input_chars) or Extractor.DEFAULT_MAX_CHARS
+    local min_chars = (opts and opts.min_delta_chars) or Extractor.MIN_CHARS
+    local doc = ui.document
+    local text, page
+    if doc.info and doc.info.has_pages then
+        local current = 1
+        pcall(function() current = ui.view.state.page or 1 end)
+        local first = (tonumber(from and from.page) or 0) + 1
+        local parts = {}
+        for p = first, current do
+            local ok, t = pcall(function() return doc:getPageText(p) end)
+            if ok and t then
+                local s = flatten_page_text(t)
+                if s ~= "" then parts[#parts + 1] = s end
+            end
+        end
+        text = table.concat(parts, "\n")
+        page = current
+    else
+        if not (from and from.xpointer) then return nil, "no_text" end
+        local current_xp = doc:getXPointer()
+        text = doc:getTextFromXPointers(from.xpointer, current_xp) or ""
+        pcall(function() page = doc:getPageFromXPointer(current_xp) end)
+    end
+    if not text or text == "" then
+        return nil, "no_text"
+    end
+    if #text < min_chars then
+        return nil, "too_short"
+    end
+    return {
+        text = truncate_tail(text, max_chars),
+        metadata = get_metadata(ui, page),
+    }
+end
+
 -- Returns { text = ..., metadata = { title, authors, chapter } }
 -- or nil, "no_text" | "too_short".
 function Extractor.extract(ui, opts)

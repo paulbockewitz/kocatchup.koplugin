@@ -122,3 +122,67 @@ describe("kocatchup_extractor", function()
         assert.are.equal("no_text", err)
     end)
 end)
+
+describe("kocatchup_extractor.extract_delta", function()
+    before_each(function() H.reset() end)
+
+    local function make_delta_ui(deltas)
+        local doc = { info = { has_pages = false } }
+        function doc:getXPointer() return "xp_cur" end
+        function doc:getTextFromXPointers(a, b)
+            assert(b == "xp_cur", "delta must end at the current position")
+            return deltas[a]
+        end
+        function doc:getProps() return { title = "The Book" } end
+        function doc:getPageFromXPointer(_xp) return 60 end
+        function doc:getPageCount() return 100 end
+        return {
+            document = doc,
+            toc = { getTocTitleByPage = function(_, page) return "Chapter " .. page end },
+        }
+    end
+
+    it("extracts only the range between the stored and current xpointers", function()
+        local ui = make_delta_ui({ xp_old = string.rep("new words ", 50) })
+        local result, err = Extractor.extract_delta(ui, { xpointer = "xp_old" }, {})
+        assert.is_nil(err)
+        assert.truthy(result.text:find("new words", 1, true))
+        assert.are.equal("Chapter 60", result.metadata.chapter)
+    end)
+
+    it("reads only pages after the stored page for paged documents", function()
+        local ui, doc = make_paged_ui(60, function(page)
+            return { { { word = "word" .. page .. string.rep("x", 20) } } }
+        end)
+        local result, err = Extractor.extract_delta(ui, { page = 40 }, {})
+        assert.is_nil(err)
+        assert.are.equal(41, doc.requested[1])
+        assert.are.equal(60, doc.requested[#doc.requested])
+        assert.is_nil(result.text:find("word40", 1, true))
+        assert.truthy(result.text:find("word41", 1, true))
+    end)
+
+    it("honors the default minimum but rolls any non-empty delta at minimum 0", function()
+        local ui = make_delta_ui({ xp_old = "tiny" })
+        local result, err = Extractor.extract_delta(ui, { xpointer = "xp_old" }, {})
+        assert.is_nil(result)
+        assert.are.equal("too_short", err)
+        local ok = Extractor.extract_delta(ui, { xpointer = "xp_old" }, { min_delta_chars = 0 })
+        assert.are.equal("tiny", ok.text)
+    end)
+
+    it("returns no_text for an empty range regardless of minimum", function()
+        local ui = make_delta_ui({ xp_old = "" })
+        local result, err = Extractor.extract_delta(ui, { xpointer = "xp_old" }, { min_delta_chars = 0 })
+        assert.is_nil(result)
+        assert.are.equal("no_text", err)
+    end)
+
+    it("tail-truncates oversized deltas on a UTF-8 boundary", function()
+        local ui = make_delta_ui({ xp_old = string.rep("\195\169", 400) })
+        local result = Extractor.extract_delta(ui, { xpointer = "xp_old" },
+            { max_input_chars = 601 })
+        assert.are.equal(600, #result.text)
+        assert.are.equal(0xC3, result.text:byte(1))
+    end)
+end)
