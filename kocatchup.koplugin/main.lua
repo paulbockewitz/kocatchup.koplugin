@@ -22,9 +22,11 @@ local Settings = require("kocatchup_settings")
 local KoCatchup = WidgetContainer:extend{
     name = "kocatchup",
     is_doc_only = true,
-    VERSION = "0.3.0", -- keep in sync with _meta.lua and the release tag
+    VERSION = "0.4.0", -- keep in sync with _meta.lua and the release tag
     PREGEN_DELAY_S = 20, -- background pre-generation waits this long after book open
+    OFFER_DELAY_S = 2, -- catch-up offer check runs this long after open/resume
     ROLL_LIMIT = 10, -- drift guard: max rolls before a re-grounded refresh
+    MAX_SANE_BREAK_S = 10 * 365 * 86400, -- beyond this, assume a broken clock
 }
 
 -- Maps typed failures to user-facing messages. Every failure path shows a
@@ -216,21 +218,84 @@ function KoCatchup:onRegenerateFullRecap()
     return true
 end
 
--- Background pre-generation (opt-in via the auto_generate setting): schedule
--- a silent recap attempt shortly after a book opens so a later manual tap is
--- an instant cache hit. Never prompts, never shows UI, never wakes Wi-Fi.
-function KoCatchup:onReaderReady()
+-- Session lifecycle. A "session" starts at book open (onReaderReady) or
+-- device resume, and ends at document close or device suspend — on e-ink,
+-- suspending with the book open is the dominant way reading breaks happen.
+-- Session start captures the position and schedules the opt-in background
+-- tasks; session end records the last-read baseline (only when the position
+-- moved, so a trivial peek never erases a real break) and unschedules tasks.
+function KoCatchup:onSessionStart()
+    local ok, pos = pcall(function() return self:getPositionInfo() end)
+    self._session_start_key = ok and pos and pos.key or nil
     local cfg = Settings.load()
-    if not cfg.auto_generate then return end
-    self._pregen_task = function() self:pregenerate() end
-    UIManager:scheduleIn(self.PREGEN_DELAY_S, self._pregen_task)
+    if cfg.auto_generate then
+        self._pregen_task = function() self:pregenerate() end
+        UIManager:scheduleIn(self.PREGEN_DELAY_S, self._pregen_task)
+    end
+    if cfg.auto_offer then
+        self._offer_task = function() self:maybeOfferCatchup() end
+        UIManager:scheduleIn(self.OFFER_DELAY_S, self._offer_task)
+    end
 end
 
-function KoCatchup:onCloseDocument()
+function KoCatchup:onSessionEnd()
+    if self.ui and self.ui.document and self.ui.doc_settings then
+        local ok, pos = pcall(function() return self:getPositionInfo() end)
+        -- Write the baseline only when the session made progress; when the
+        -- session-start position is unknown, err toward writing.
+        if ok and pos and (not self._session_start_key or pos.key ~= self._session_start_key) then
+            Cache.touch_last_read(self.ui.doc_settings, os.time())
+        end
+    end
     if self._pregen_task then
         UIManager:unschedule(self._pregen_task)
         self._pregen_task = nil
     end
+    if self._offer_task then
+        UIManager:unschedule(self._offer_task)
+        self._offer_task = nil
+    end
+end
+
+KoCatchup.onReaderReady = KoCatchup.onSessionStart
+KoCatchup.onResume = KoCatchup.onSessionStart
+KoCatchup.onCloseDocument = KoCatchup.onSessionEnd
+KoCatchup.onSuspend = KoCatchup.onSessionEnd
+
+-- The catch-up offer (opt-in via auto_offer): after a qualifying break, ask
+-- once per open/resume whether to catch up. All guards re-evaluate at fire
+-- time; any failure means silence — an offer that leads to an error message
+-- is worse than no offer.
+function KoCatchup:maybeOfferCatchup()
+    self._offer_task = nil
+    if not self.ui or not self.ui.document then return end
+    local cfg = Settings.load()
+    if not cfg.auto_offer then return end
+    if Llm.check_config(cfg) then return end
+    local baseline = Cache.last_read(self.ui.doc_settings)
+    if not baseline then return end
+    local elapsed = os.time() - baseline
+    if elapsed <= 0 or elapsed > self.MAX_SANE_BREAK_S then return end
+    if elapsed < (tonumber(cfg.auto_offer_days) or 3) * 86400 then return end
+    local pos = self:getPositionInfo()
+    if pos.percent and pos.percent <= 0.02 then return end
+
+    UIManager:show(ConfirmBox:new{
+        text = _("You've been away from this book for a while. Catch up on the story so far?"),
+        ok_text = _("Catch up"),
+        cancel_text = _("Not now"),
+        ok_callback = function()
+            -- Acceptance makes this session's pre-generation redundant; a
+            -- pending pregen firing mid-generation would double-spend.
+            if self._pregen_task then
+                UIManager:unschedule(self._pregen_task)
+                self._pregen_task = nil
+            end
+            self:onKoCatchupGenerate()
+        end,
+        -- Decline/dismiss: nothing persisted; an unread session preserves
+        -- the baseline, so the offer returns at the next qualifying start.
+    })
 end
 
 function KoCatchup:pregenerate()

@@ -13,6 +13,7 @@ KO Catchup generates a spoiler-safe AI catch-up recap of the book you're reading
 - Per-book caching: re-opening a recap at the same position is instant and works offline; if you've read further, you choose between the saved recap and an update.
 - Rolling incremental updates: updating a recap sends only the previous recap plus the text you've read since — fast and cheap at regular update cadences (a long reading gap costs like a full generation) — and coverage of earlier events accumulates as you read. A drift guard periodically re-grounds the recap against the actual book text, and Settings → "Regenerate full recap" forces a from-scratch recap anytime.
 - Optional background pre-generation: opt in and a recap is silently prepared shortly after you open a book (only when Wi-Fi is already on), so viewing it is instant.
+- Optional catch-up offers: opt in and, when you return to a book after a break (reopening it *or* resuming the device with the book open), KO Catchup asks whether you'd like a recap. Quick peeks at a book don't reset the break clock, and enabling this together with pre-generation means the recap is usually already waiting when you say yes.
 - Cancellable generation: the network call runs in a subprocess — tap to cancel; the UI never freezes.
 
 ## Installation
@@ -41,6 +42,8 @@ Open a book, then: Tools → KO Catchup → Settings.
 | Recap length | Short (~150 words), Standard (~400), Detailed (~800) |
 | Max input size | How much recent book text is sent to the model (default 100,000 characters) |
 | Pre-generate on book open | Off by default. When on, a recap is silently generated ~20s after opening a book — only if Wi-Fi is already connected (it never prompts or wakes the radio) and the cached recap is missing or stale |
+| Offer catch-up after a break | Off by default. When on, returning to a book after the break threshold (reopen or device resume) asks "Catch up on the story so far?" — one tap to a recap, "Not now" to dismiss. Needs one reading session first to measure breaks from |
+| Break threshold | 1, 3 (default), or 7 days of not reading a book before the catch-up offer appears |
 
 ### Provider examples
 

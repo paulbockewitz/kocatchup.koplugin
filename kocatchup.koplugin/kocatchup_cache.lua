@@ -68,6 +68,27 @@ function Cache.rollable_position(entry)
     return nil
 end
 
+Cache.LAST_READ_KEY = "kocatchup_last_read"
+
+-- Records the end of a reading session. The explicit flush is load-bearing,
+-- not stylistic: KOReader's ReaderUI flushes the sidecar BEFORE broadcasting
+-- the close event, so an unflushed write here would be silently lost.
+function Cache.touch_last_read(doc_settings, timestamp)
+    if not doc_settings then return end
+    pcall(function() doc_settings:saveSetting(Cache.LAST_READ_KEY, timestamp) end)
+    pcall(function()
+        if doc_settings.flush then doc_settings:flush() end
+    end)
+end
+
+-- Returns the last-read timestamp as a number, or nil when absent/corrupt.
+function Cache.last_read(doc_settings)
+    if not doc_settings then return nil end
+    local ok, ts = pcall(function() return doc_settings:readSetting(Cache.LAST_READ_KEY) end)
+    if not ok then return nil end
+    return tonumber(ts)
+end
+
 -- Drift counters with schema-v1 defaults.
 function Cache.counters(entry)
     local rolls = tonumber(entry and entry.roll_count) or 0

@@ -581,3 +581,182 @@ describe("main (rolling incremental recaps)", function()
         assert.are.equal("xp:xp_old", ui.doc_settings.data.kocatchup.position)
     end)
 end)
+
+describe("main (auto-offer catch-up on reopen)", function()
+    local Cache = require("kocatchup_cache")
+    local NetworkMgr = require("ui/network/manager")
+
+    before_each(function()
+        H.reset()
+        Llm.transport = nil
+    end)
+
+    local DAY = 86400
+
+    local function offer_plugin(opts)
+        opts = opts or {}
+        configure_ollama()
+        local cfg = Settings.load()
+        cfg.auto_offer = true
+        if opts.days then cfg.auto_offer_days = opts.days end
+        if opts.auto_generate then cfg.auto_generate = true end
+        Settings.save(cfg)
+        local ui = make_ui(string.rep("story text ", 200), opts.page or 50)
+        if opts.baseline then
+            ui.doc_settings:saveSetting(Cache.LAST_READ_KEY, opts.baseline)
+        end
+        if opts.entry then
+            ui.doc_settings:saveSetting("kocatchup", opts.entry)
+        end
+        return make_plugin(ui), ui
+    end
+
+    local function current_entry()
+        return {
+            recap = "cached recap", position = "xp:xp_cur",
+            xpointer = "xp_cur", page = 50, percent = 0.5,
+            model = "test-model", recap_length = "standard",
+            roll_count = 0, rolled_chars = 0, timestamp = 1,
+        }
+    end
+
+    it("offers after a qualifying break; accepting shows the cached recap offline", function()
+        local plugin = offer_plugin({ baseline = os.time() - 5 * DAY, entry = current_entry() })
+        Llm.transport = function() error("cached accept must not call the provider") end
+
+        plugin:onReaderReady()
+        assert.are.equal(1, #H.scheduled)
+        H.fire_scheduled()
+
+        local box = H.last_shown("ConfirmBox")
+        assert.is_not_nil(box)
+        assert.are.equal("Catch up", box.ok_text)
+        assert.are.equal("Not now", box.cancel_text)
+        box.ok_callback()
+        local viewer = H.last_shown("TextViewer")
+        assert.are.equal("cached recap", viewer.text)
+        assert.are.equal(0, H.run_when_online_calls)
+    end)
+
+    it("stays quiet under the threshold, and respects the picker", function()
+        local plugin = offer_plugin({ baseline = os.time() - 1 * DAY })
+        plugin:onReaderReady()
+        H.fire_scheduled()
+        assert.is_nil(H.last_shown("ConfirmBox"))
+
+        H.reset()
+        plugin = offer_plugin({ days = 7, baseline = os.time() - 5 * DAY })
+        plugin:onReaderReady()
+        H.fire_scheduled()
+        assert.is_nil(H.last_shown("ConfirmBox"))
+    end)
+
+    it("never offers without a baseline; a progressed session writes one", function()
+        local plugin, ui = offer_plugin({})
+        plugin:onReaderReady()
+        H.fire_scheduled()
+        assert.is_nil(H.last_shown("ConfirmBox"))
+
+        plugin._session_start_key = "xp:somewhere_earlier"
+        plugin:onCloseDocument()
+        assert.is_not_nil(Cache.last_read(ui.doc_settings))
+    end)
+
+    it("setting off: no offer task, but progressed sessions still record", function()
+        configure_ollama()
+        local ui = make_ui(string.rep("story text ", 200), 50)
+        local plugin = make_plugin(ui)
+        plugin:onReaderReady()
+        assert.are.equal(0, #H.scheduled)
+        plugin._session_start_key = "xp:somewhere_earlier"
+        plugin:onCloseDocument()
+        assert.is_not_nil(Cache.last_read(ui.doc_settings))
+    end)
+
+    it("resume schedules the offer and suspend records progressed sessions", function()
+        local plugin, ui = offer_plugin({ baseline = os.time() - 6 * DAY })
+        plugin:onResume()
+        assert.are.equal(1, #H.scheduled)
+        H.fire_scheduled()
+        assert.is_not_nil(H.last_shown("ConfirmBox"))
+
+        plugin._session_start_key = "xp:somewhere_earlier"
+        local before = Cache.last_read(ui.doc_settings)
+        plugin:onSuspend()
+        assert.truthy(Cache.last_read(ui.doc_settings) > before)
+        assert.are.equal(0, #H.scheduled)
+    end)
+
+    it("a session with no progress preserves the old baseline", function()
+        local plugin, ui = offer_plugin({ baseline = 123456 })
+        plugin:onReaderReady() -- captures session-start key "xp:xp_cur"
+        H.scheduled = {} -- ignore the offer task for this scenario
+        plugin:onCloseDocument() -- position unchanged
+        assert.are.equal(123456, Cache.last_read(ui.doc_settings))
+    end)
+
+    it("guards: bad config, too-early position, and clock jumps all mean silence", function()
+        -- No API key (defaults) but auto_offer on:
+        local cfg = Settings.load()
+        cfg.auto_offer = true
+        Settings.save(cfg)
+        local ui = make_ui(string.rep("story text ", 200), 50)
+        ui.doc_settings:saveSetting(Cache.LAST_READ_KEY, os.time() - 5 * DAY)
+        local plugin = make_plugin(ui)
+        plugin:onReaderReady()
+        H.fire_scheduled()
+        assert.is_nil(H.last_shown("ConfirmBox"))
+
+        H.reset()
+        plugin = offer_plugin({ baseline = os.time() - 5 * DAY, page = 1 })
+        plugin:onReaderReady()
+        H.fire_scheduled()
+        assert.is_nil(H.last_shown("ConfirmBox"))
+
+        H.reset()
+        plugin = offer_plugin({ baseline = os.time() + 2 * DAY }) -- future baseline
+        plugin:onReaderReady()
+        H.fire_scheduled()
+        assert.is_nil(H.last_shown("ConfirmBox"))
+    end)
+
+    it("accepting cancels the pending pregen task: exactly one generation", function()
+        local plugin = offer_plugin({
+            baseline = os.time() - 5 * DAY, auto_generate = true,
+        })
+        local transport_calls = 0
+        Llm.transport = function()
+            transport_calls = transport_calls + 1
+            return OPENAI_OK, 200
+        end
+
+        plugin:onReaderReady()
+        assert.are.equal(2, #H.scheduled)
+        H.fire_scheduled(2) -- fire only the offer; pregen stays queued
+        local box = H.last_shown("ConfirmBox")
+        assert.is_not_nil(box)
+        assert.are.equal(1, #H.scheduled, "pregen still queued while dialog is open")
+
+        box.ok_callback()
+        assert.are.equal(0, #H.scheduled, "accept must unschedule pregen")
+        H.fire_scheduled()
+        assert.are.equal(1, transport_calls)
+    end)
+
+    it("accept with no cache and declined Wi-Fi ends silently (documented trade-off)", function()
+        local plugin, ui = offer_plugin({ baseline = os.time() - 5 * DAY })
+        local orig = NetworkMgr.runWhenOnline
+        NetworkMgr.runWhenOnline = function() end -- user declines the Wi-Fi prompt
+        Llm.transport = function() error("no provider call without connectivity") end
+
+        plugin:onReaderReady()
+        H.fire_scheduled()
+        local box = H.last_shown("ConfirmBox")
+        H.shown = {}
+        box.ok_callback()
+        NetworkMgr.runWhenOnline = orig
+
+        assert.are.equal(0, #H.shown)
+        assert.is_nil(ui.doc_settings.data.kocatchup)
+    end)
+end)

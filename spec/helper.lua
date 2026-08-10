@@ -18,11 +18,19 @@ function H.reset()
     H.network_online = true
 end
 
--- Run all scheduled callbacks (as if their timers fired), clearing the queue.
-function H.fire_scheduled()
+-- Run scheduled callbacks as if their timers fired. With max_delay_s, fires
+-- only tasks scheduled at or under that delay, leaving later ones queued
+-- (lets tests fire a 2s task while a 20s task stays pending).
+function H.fire_scheduled(max_delay_s)
     local tasks = H.scheduled
     H.scheduled = {}
-    for _, t in ipairs(tasks) do t[2]() end
+    for _, t in ipairs(tasks) do
+        if max_delay_s and t[1] > max_delay_s then
+            table.insert(H.scheduled, t)
+        else
+            t[2]()
+        end
+    end
 end
 
 -- Minimal KOReader-style widget class: :extend for subclassing, :new for

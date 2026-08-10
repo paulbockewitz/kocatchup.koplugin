@@ -14,6 +14,8 @@ Settings.defaults = {
     recap_length = "standard",  -- short | standard | detailed
     max_input_chars = 100000,   -- tail window sent to the model
     auto_generate = false,      -- pre-generate silently on book open (opt-in)
+    auto_offer = false,         -- offer a catch-up after a reading break (opt-in)
+    auto_offer_days = 3,        -- break threshold in days: 1 | 3 | 7
 }
 
 function Settings.path()
@@ -166,6 +168,23 @@ function Settings.getMenuItems()
             end,
             keep_menu_open = true,
             help_text = _("When enabled and Wi-Fi is already connected, a recap is silently generated and cached shortly after you open a book, so viewing it later is instant. Note: this sends book text to your configured provider without a per-recap tap."),
+        },
+        {
+            text = _("Offer catch-up after a break"),
+            checked_func = function() return Settings.load().auto_offer == true end,
+            callback = function()
+                update("auto_offer", not Settings.load().auto_offer)
+            end,
+            keep_menu_open = true,
+            help_text = _("When you return to a book after a break, KO Catchup asks whether you want a recap. The first offer can appear after your next reading session (it needs one session to measure the break from)."),
+        },
+        {
+            text = _("Break threshold"),
+            sub_item_table = choice_items("auto_offer_days", {
+                { text = _("1 day"), value = 1 },
+                { text = _("3 days"), value = 3 },
+                { text = _("7 days"), value = 7 },
+            }),
         },
     }
 end

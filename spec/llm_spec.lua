@@ -143,6 +143,8 @@ describe("kocatchup_settings", function()
         assert.are.equal("openai", cfg.provider)
         assert.are.equal("standard", cfg.recap_length)
         assert.are.equal(100000, cfg.max_input_chars)
+        assert.is_false(cfg.auto_offer)
+        assert.are.equal(3, cfg.auto_offer_days)
     end)
 
     it("round-trips saved values merged over defaults", function()
